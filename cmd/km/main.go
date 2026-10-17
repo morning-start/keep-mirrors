@@ -109,16 +109,69 @@ func loadRegistry() (*registry.Registry, []engine.PluginSource, error) {
 
 // ── commands ───────────────────────────────────────────────────────────
 
+// runTUI opens the interactive interface with plugin hot reload enabled.
+//
+// The reloader lives here rather than inside tui so the TUI stays a pure
+// renderer: it is handed a "poll the plugins" function and never learns where
+// plugins come from.
 func runTUI() error {
-	reg, diag, err := loadRegistry()
+	loader := newLoader()
+	provs, diag, err := loader.Load()
 	if err != nil {
 		return err
 	}
 	reportBroken(diag)
 
+	reg := registry.New()
+	for _, p := range provs {
+		reg.Register(p)
+	}
+
+	reloader := engine.NewReloader(loader)
+	if err := reloader.Snapshot(); err != nil {
+		// A failed baseline only risks one spurious reload at the first tick;
+		// not worth refusing to start over.
+		fmt.Fprintf(os.Stderr, "warning: cannot watch plugins: %v\n", err)
+	}
+	defer reloader.Close()
+
 	m := app.New(reg)
 	m.RefreshSelection()
-	return tui.Run(m)
+	return tui.Run(m, pollPlugins(reloader))
+}
+
+// pollPlugins returns the function the TUI calls on every tick.
+//
+// It runs inside a tea.Cmd goroutine, so it must not touch the model. It polls
+// the directory and packages the outcome into a message; the model is updated
+// on the UI goroutine when that message is handled.
+func pollPlugins(r *engine.Reloader) tui.PollFunc {
+	return func() app.ReloadedMsg {
+		provs, diag, changed, err := r.Poll()
+		if err != nil {
+			return app.ReloadedMsg{Err: err}
+		}
+		msg := app.ReloadedMsg{Changed: changed}
+		for _, d := range diag {
+			if d.Err != nil {
+				msg.Broken = append(msg.Broken, d.ID)
+			}
+		}
+		if !changed {
+			return msg
+		}
+		out := make([]provider.Provider, 0, len(provs))
+		for _, p := range provs {
+			out = append(out, p)
+		}
+		msg.Providers = out
+
+		// Replaced VMs are closed on the next poll, by which time any call
+		// still using one has returned. Closing here would block the UI thread
+		// on the state mutex for up to the call timeout.
+		r.Retire(provs)
+		return msg
+	}
 }
 
 func cmdList(args []string) error {

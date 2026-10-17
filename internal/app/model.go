@@ -74,6 +74,44 @@ func New(reg *registry.Registry) *Model {
 	return m
 }
 
+// ReplaceProviders swaps in a freshly loaded provider set after a hot reload.
+//
+// The user's selections are keyed by provider id and are deliberately kept: a
+// reload is supposed to change how a plugin behaves, not to silently reset the
+// preset someone picked. The cursor is re-anchored on the same provider id for
+// the same reason — the list order can change when a plugin's title changes,
+// and a cursor index would then point at a different source.
+func (m *Model) ReplaceProviders(ps []provider.Provider) {
+	keepID := ""
+	if p := m.Selected(); p != nil {
+		keepID = p.ID()
+	}
+
+	m.Reg.Replace(ps)
+	m.Providers = m.Reg.All()
+
+	if keepID != "" {
+		for i, p := range m.visible() {
+			if p.ID() == keepID {
+				m.Cursor = i
+				break
+			}
+		}
+	}
+	if m.Cursor >= len(m.visible()) {
+		m.Cursor = len(m.visible()) - 1
+		if m.Cursor < 0 {
+			m.Cursor = 0
+		}
+	}
+
+	// The pending plan and benchmark describe the old VM. Rebuilding the plan
+	// here also re-runs the new code, which is the point of the reload.
+	m.Bench = nil
+	m.BenchRunning = false
+	m.refreshPlan()
+}
+
 // Ctx returns the provider context passed to plugins.
 func (m *Model) Ctx() provider.Context {
 	return provider.Context{
@@ -372,6 +410,42 @@ func (m *Model) RunBenchmark() tea.Cmd {
 type BenchDoneMsg struct {
 	rows []BenchRow
 	err  error
+}
+
+// ReloadedMsg carries the result of a plugin-directory poll back to the UI
+// goroutine.
+//
+// The poll itself runs in a tea.Cmd, so it cannot touch the model: swapping the
+// provider set mutates m.Providers and m.Reg, which View reads concurrently.
+// Everything the model needs travels in this message instead.
+type ReloadedMsg struct {
+	// Providers is nil when nothing changed; Apply then does nothing.
+	Providers []provider.Provider
+	// Changed reports whether the poll found a new provider set to install.
+	Changed bool
+	// Broken lists plugins that failed to compile, so a syntax error the user
+	// just introduced is visible rather than silently leaving the old version
+	// in place.
+	Broken []string
+	Err    error
+}
+
+// ApplyReload installs a reloaded provider set.
+func (m *Model) ApplyReload(msg ReloadedMsg) {
+	if msg.Err != nil {
+		m.setErr("reload failed: %v", msg.Err)
+		return
+	}
+	if len(msg.Broken) > 0 {
+		// Report the broken plugins even on a successful reload: the user
+		// needs to know which file did not take effect.
+		m.setErr("%d 个插件加载失败：%s", len(msg.Broken), strings.Join(msg.Broken, ", "))
+	} else if msg.Changed {
+		m.setOK("已重新加载插件（%d 个）", len(msg.Providers))
+	}
+	if msg.Changed {
+		m.ReplaceProviders(msg.Providers)
+	}
 }
 
 // ApplyBench records the results of a finished measurement.

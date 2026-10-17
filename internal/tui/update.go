@@ -3,11 +3,37 @@ package tui
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"keep-mirrors/internal/app"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
+
+// PollFunc polls the plugin directories and reports what changed. It is
+// supplied by the caller so the TUI never learns where plugins live.
+type PollFunc func() app.ReloadedMsg
+
+// PollInterval is how often the plugin directories are checked.
+//
+// One second suits a human editing a file: fast enough that saving feels like
+// it took effect, slow enough that the poll is free. Polling is chosen over a
+// filesystem watcher because the watched set is a few small text files; an OS
+// watcher would add event coalescing, rename semantics and a background
+// goroutine's lifetime to get wrong on every platform.
+const PollInterval = time.Second
+
+// tickMsg is the poll timer firing; it carries no data.
+type tickMsg struct{}
+
+// tickCmd schedules the next poll.
+//
+// Re-arming from the message handler (rather than tea.Every) keeps exactly one
+// timer alive. The cost is that every path returning from Update must forward
+// this command, or polling stops silently after one dropped return.
+func tickCmd(d time.Duration) tea.Cmd {
+	return tea.Tick(d, func(time.Time) tea.Msg { return tickMsg{} })
+}
 
 // Key bindings. Kept in one table so the help text and the handler cannot
 // drift apart.
@@ -50,19 +76,26 @@ func cyclePreset(m *app.Model) {
 // this file contains only message plumbing.
 type Model struct {
 	app           *app.Model
+	poll          PollFunc
 	help          bool
 	filtering     bool
 	filterDraft   string
 	width, height int
 }
 
-// New builds the TUI model over an application model.
-func New(m *app.Model) Model {
-	return Model{app: m}
+// New builds the TUI model over an application model. poll may be nil, which
+// disables hot reload (tests and any future headless use).
+func New(m *app.Model, poll PollFunc) Model {
+	return Model{app: m, poll: poll}
 }
 
 // Init implements tea.Model.
-func (m Model) Init() tea.Cmd { return nil }
+func (m Model) Init() tea.Cmd {
+	if m.poll == nil {
+		return nil
+	}
+	return tickCmd(PollInterval)
+}
 
 // Update implements tea.Model.
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -74,6 +107,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case app.BenchDoneMsg:
 		m.app.ApplyBench(msg)
+		return m, nil
+
+	case tickMsg:
+		if m.poll == nil {
+			return m, nil
+		}
+		// Run the poll off the UI goroutine, then re-arm the timer
+		// immediately. Waiting for the poll to finish before re-arming would
+		// stretch the interval by however long loading takes, and a slow
+		// reload would make the watcher look dead.
+		return m, tea.Batch(
+			func() tea.Msg { return m.poll() },
+			tickCmd(PollInterval),
+		)
+
+	case app.ReloadedMsg:
+		m.app.ApplyReload(msg)
 		return m, nil
 
 	case tea.KeyMsg:
@@ -166,9 +216,9 @@ func renderHelp() string {
 	return b.String()
 }
 
-// Run starts the interactive program.
-func Run(m *app.Model) error {
-	p := tea.NewProgram(New(m), tea.WithAltScreen())
+// Run starts the interactive program. poll may be nil to disable hot reload.
+func Run(m *app.Model, poll PollFunc) error {
+	p := tea.NewProgram(New(m, poll), tea.WithAltScreen())
 	_, err := p.Run()
 	return err
 }
