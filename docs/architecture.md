@@ -7,16 +7,31 @@
 
 ## 1. 核心决策
 
-### 1.1 内置即插件，只有一份契约
+### 1.1 只有一份契约，插件在磁盘上
 
-pip / npm / cargo / go 四个源不是 Go 内置的特殊逻辑，而是 `plugins/` 下的
-普通 Lua 文件。它们和用户写的第三方插件走**完全相同**的加载路径、沙箱和
-Provider 接口。
+pip / npm / cargo / go 四个源不是 Go 内置的特殊逻辑，而是普通 Lua 文件。
+它们和用户写的第三方插件走**完全相同**的加载路径、沙箱和 Provider 接口。
 
-这样做换来的是：改 pip 的默认源不用重编译，加一种新源不用改 Go。代价是
-Go 侧没有编译期类型检查——所以我们用契约版本号（`api.major`）和加载时
-校验来兜底，并在 `internal/engine/plugins_test.go` 里对每个内置插件跑
-`status()` 和 `plan()`，让契约破坏在 CI 就暴露。
+运行时只从两个目录读，`user` 按 id 覆盖 `official`：
+
+```
+<appdata>/keep-mirrors/plugins/official/   官方收录，同步会整体重写
+<appdata>/keep-mirrors/plugins/user/       用户自带，km 永不写入
+```
+
+**插件不编译进二进制**。这一点是后续能力的根：能从插件库同步、能热重载、
+能让用户自带插件，全都要求「插件在运行期是磁盘上的普通文件」。一旦把 `.lua`
+塞进 `embed.FS`，「插件在哪」就变成编译期常量，上面三件事都得推倒重来。
+
+`internal/plugins/*.lua` 是**种子快照**，角色是「让离线安装可用」，不是
+运行时来源：`SeedIfEmpty` 在 `official/` 为空时释放一次，之后不再参与加载。
+「目录非空就跳过」是刻意的一刀切，它同时保证同步来的新版本不被回滚、用户
+删掉的插件不被复活。
+
+代价：Go 侧没有编译期类型检查。用契约版本号（`api.major`）和加载时校验兜底，
+并在 `internal/engine/plugins_test.go` 里对种子里每个插件跑 `status()` 和
+`plan()`。注意这些测试读的是**同一个 embed FS**，不是磁盘路径——测试和二进制
+共享同一份数据源，否则两边会漂移。
 
 ### 1.2 插件只提案，Go 才执行
 
@@ -73,9 +88,11 @@ section-aware 的结构化改写（且必定先备份）。
 │  internal/config   INI/TOML/KV/YAML 的最小渲染与读回             │
 │  internal/env      环境变量：Windows HKCU / POSIX profile        │
 │  internal/fsutil   原子写（tmp → fsync → rename）、模式保持       │
-│  internal/paths    ~ 解析、应用数据目录、home 边界检查            │
+│  internal/paths    ~ 解析、应用数据目录、插件目录、home 边界检查   │
 └──────────────────────────────────────────────────────────────┘
-         plugins/*.lua         ← 所有镜像源能力在这里
+   <appdata>/keep-mirrors/plugins/{official,user}/*.lua
+                          ← 所有镜像源能力在这里（运行时来源）
+   internal/plugins/*.lua ← 种子快照，仅首次运行释放到 official/
 ```
 
 依赖方向严格单向：`tui` → `app` → `provider`/`engine` → `core` → 底层原语。
@@ -96,7 +113,7 @@ section-aware 的结构化改写（且必定先备份）。
 | `core` | Plan、Diff、Apply、Backup、Undo | Apply 前必 `Describe`；备份先于任何修改 |
 | `provider` | Provider 接口、`Preset` / `Setting` / `Status` 数据类型 | 接口字段与 Lua 契约 1:1；预设顺序即默认值顺序，不排序 |
 | `engine` | gopher-lua 沙箱、`km.*` 绑定、加载器 | 每个插件独立 `LState`；调用串行化；带 deadline |
-| `registry` | 已加载插件的集合 | 同名 id 后者胜出（用户覆盖内置） |
+| `registry` | 已加载插件的集合 | 同名 id 后者胜出（user 覆盖 official） |
 | `app` | 状态机 | TUI 与 CLI 共用；所有文件访问都经由 provider |
 | `tui` | 渲染与按键 | 纯函数，不碰文件系统 |
 
@@ -146,15 +163,17 @@ app.Model.Status()
 
 ```
 cmd/km main
-  └─ engine.BuiltinFS = <embed.FS>
-     └─ engine.NewLoader().Load()
-          ├─ 列出 plugins/（内置，embed） + ~/.config/keep-mirrors/plugins/（用户）
-          ├─ 用户同名覆盖内置（按 id 去重，用户赢）
-          ├─ 读源码 → New(Options) → LoadChunk
-          │     └─ DoString("__km_module = (function()\n" + src + "\nend)()")
-          │           ↑ 包裹一层，让插件的 return M 可被 Go 取到
-          ├─ 校验 api.major == 1，否则跳过并报告
-          └─ 读元数据 → 构造 LuaProvider → 注册进 registry
+  └─ engine.SetSeed(internal/plugins.FS)     ← 只用于首次播种
+     └─ engine.NewLoader()
+          ├─ SeedIfEmpty()：official/ 为空时把种子释放进去，否则跳过
+          └─ Load()
+               ├─ 列出 official/ 和 user/ 下的 *.lua
+               ├─ user 同名覆盖 official（按 id 去重，user 赢）
+               ├─ 读源码 → New(Options) → LoadChunk
+               │     └─ DoString("__km_module = (function()\n" + src + "\nend)()")
+               │           ↑ 包裹一层，让插件的 return M 可被 Go 取到
+               ├─ 校验 api.major == 1，否则跳过并报告
+               └─ 读元数据 → 构造 LuaProvider → 注册进 registry
 ```
 
 单个插件加载失败不影响其他插件，失败信息进 `diag` 并由调用方打印到
@@ -203,7 +222,7 @@ body:find(">>> keep-mirrors:pip >>>", 1, true)
 ```
 
 **症状**：写入成功，但 `status()` 永远返回空，界面一直显示「未配置」。
-四个内置插件一开始全中。对策：契约文档里写成显式警告，`plugins_test.go`
+四个官方插件一开始全中。对策：契约文档里写成显式警告，`plugins_test.go`
 对每个插件跑 apply → status 往返。
 
 ### 6.2 方案集顺序被无意改变
@@ -258,11 +277,16 @@ HOME/APPDATA/CARGO_HOME/GOENV 全指到临时目录；注册表则改为断言�
 
 | 功能 | 预留位置 | 还差什么 |
 |---|---|---|
-| 热重载 | `engine.Loader.Load()` 已是无状态函数 | fsnotify watch + 原子替换 registry 指针 |
+| 从插件库同步 | 插件已是磁盘文件，`Loader` 每次启动重读 | `km plugin sync`：比对远端 commit SHA，按该 SHA 拉取 tarball 后写入 `official/` |
+| 热重载 | 插件是普通文件，`Loader.Load()` 无状态 | 轮询 mtime → 重新 `Load` → **换 registry 指针**（不要原地重载 `LState`）→ 旧 provider 延迟 Close |
 | 无头 CI 模式 | `app.Model` 与 `tui` 已解耦 | 已可用：`km apply --preset=x --yes` |
 | 方案集一键切换 | `Model.Presets` 已按 provider 存 | 一个跨 provider 的 preset 组概念 |
 | 命名快照 | `core.Backup` 结构已可序列化 | 导出/导入格式与 `km snapshot` 子命令 |
-| 用户插件覆盖 | `Loader` 已按 id 去重、用户优先 | 已完成，写文件到 `~/.config/keep-mirrors/plugins/` 即生效 |
+| 用户插件覆盖 | 已完成：`user/` 按 id 覆盖 `official/` | 无 |
+| 本地导入命令 | 目录扫描已就绪 | `km plugin import <path>`：校验元数据、检测 id 冲突、复制进 `user/` |
+
+顺序建议：**先热重载，后同步**。同步写完文件要靠热重载才生效，反过来做会
+每次验证都要求重启。
 
 ---
 
@@ -271,7 +295,7 @@ HOME/APPDATA/CARGO_HOME/GOENV 全指到临时目录；注册表则改为断言�
 | 层次 | 测什么 | 在哪 |
 |---|---|---|
 | 沙箱 | 危险全局函数必须不存在；`~` 外读取必须被拒；死循环必须被中断；契约版本不匹配必须被拒 | `internal/engine/engine_test.go` |
-| 契约 | 每个内置插件都能 load、能 `status()`、能 `plan()`，且 default preset 计划非空 | `internal/engine/plugins_test.go` |
+| 契约 | 种子里每个插件都能 load、能 `status()`、能 `plan()`，且 default preset 计划非空 | `internal/engine/plugins_test.go` |
 | 往返 | apply 后 `status()` 必须反映改动（防 §6.1） | `cmd/km/e2e_test.go` |
 | 撤销 | apply 改变的值，undo 必须恢复到 apply 前；备份经 manifest 往返后仍带环境变量原值 | `cmd/km/e2e_test.go` |
 

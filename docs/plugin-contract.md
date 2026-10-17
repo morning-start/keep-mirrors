@@ -1,8 +1,12 @@
 # Plugin Contract v1
 
-A plugin is a Lua file that returns a module table. Put it in `plugins/`
-(built-in) or `~/.config/keep-mirrors/plugins/` (user; a same-named file
-overrides the built-in).
+A plugin is a Lua file that returns a module table. Put it in
+`<appdata>/keep-mirrors/plugins/user/` (yours; a same-named file overrides the
+official one) or `official/` (curated, rewritten by sync). `km plugin dir`
+prints both paths.
+
+Plugins are **not compiled into the binary**. They are read from disk at
+runtime, so editing one changes behaviour on the next run without a rebuild.
 
 A plugin **never writes a file directly**. It declares intent and Go performs
 the write. That is the whole design: backup, diff, undo, atomic replace and
@@ -11,17 +15,39 @@ corrupt a config file.
 
 ## Metadata
 
+The first group is what the tool needs in order to run the plugin. The second
+group is published information, read when someone asks about a plugin — it is
+never consulted while rendering the list.
+
 ```lua
 local M = {}
 
+-- Required: identity and contract
 M.api       = { major = 1, minor = 0 }   -- contract version; a major mismatch is refused
 M.id        = "pip"                       -- stable id, also the managed-block name
 M.title     = "Python / pip"              -- display name
 M.category  = "language"                  -- language|container|os|tool
+
+-- Expected of anything distributed publicly
+M.version     = "1.0.0"                   -- the plugin's own release
+M.author      = "keep-mirrors"
+M.license     = "MIT"
+M.homepage    = "https://github.com/keep-mirrors/plugins/blob/main/pip.lua"
+M.description = "pip 的 index-url 与 trusted-host"
+
+-- Advisory: used by the UI, not a load-time gate
 M.platforms = { "windows", "linux", "darwin" }
 M.detects   = { "python", "python3", "pip" }  -- used to detect installation
 M.envs      = { "PIP_INDEX_URL" }         -- environment variables this source touches
 ```
+
+**`version` and `api` are different axes** and must not be conflated: changing
+a mirror URL bumps `version`, while using a new `km.*` capability bumps `api`.
+Only `api` gates loading.
+
+Bump `version` whenever you change a plugin, even a URL. It is what a bug
+report quotes, and what tells a user whether the copy on their disk is the one
+they meant to install.
 
 ## Presets and settings
 
@@ -152,6 +178,9 @@ capped at 64 MB.
 | Symptom | Cause |
 |---|---|
 | Plugin does not appear | `M.id` missing, or `api.major` is not 1 |
+| A user plugin did not override the official one | the file must be named `<id>.lua`, and `id` must match the official plugin's id exactly |
+| Edits had no effect | you edited the seed in the source repo; the running copy lives in `<appdata>/keep-mirrors/plugins/` |
+| Edits keep being reverted | you edited `official/`; copy the file into `user/` and edit that instead |
 | `status()` reports "not a function" | a `local function` is referenced before it is declared; Lua locals must be declared before use |
 | `status()` always returns empty | usually `%-` written where `-` was meant (see above) |
 | Writes to an unexpected directory | `CARGO_HOME` / `GOENV` point elsewhere; validate with `km.fs.exists()` first |

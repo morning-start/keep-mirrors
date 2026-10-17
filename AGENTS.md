@@ -11,8 +11,11 @@
 ## 1. 项目是什么
 
 Go 写的终端镜像源管理器。**所有镜像源能力由 Lua 插件提供**（pip / npm /
-cargo / go 就是 `plugins/` 下的四个普通 Lua 文件），Go 负责 TUI、沙箱、原子
-写入、备份撤销。
+cargo / go 就是四个普通 Lua 文件，运行时从磁盘加载），Go 负责 TUI、沙箱、
+原子写入、备份撤销。
+
+插件在运行期存在于 `%APPDATA%\keep-mirrors\plugins\{official,user}\`，仓库里的
+`internal/plugins/` 是首次运行用的种子快照，两者角色不同，见 §3.3。
 
 分层：`cmd/km` → `internal/tui` + `internal/app` → `internal/engine` →
 `internal/core` → `internal/{marker,config,env,fsutil,paths}`。
@@ -34,8 +37,14 @@ go build -o km.exe ./cmd/km                       # 产出可执行
 .\km.exe apply pip --preset=tuna --yes
 .\km.exe undo
 
-# 改了 plugins/*.lua 必须同步到 embed 副本（见 §3.3）
-Copy-Item plugins\*.lua cmd\km\plugins\ -Force
+# 插件
+.\km.exe plugin dir                               # 两个插件目录在哪
+.\km.exe plugin list                              # 已加载插件与来源
+.\km.exe plugin show pip                          # 元数据全貌
+
+# 改了 internal/plugins/*.lua 只影响新安装；要验证当前机器，
+# 直接改 %APPDATA%\keep-mirrors\plugins\official\ 下的文件（不用重编译），
+# 或者复制到 user\ 再改（不会被同步覆盖）。
 ```
 
 Windows 环境下用 `pwsh`，路径用反斜杠。
@@ -56,18 +65,27 @@ Windows 环境下用 `pwsh`，路径用反斜杠。
 `plan()` 写块的 `block` 名，和 `status()` 里 `body:find(">>> keep-mirrors:<id> >>>")`
 的 `<id>` 必须逐字符相同。不一致 = 写入成功但状态永远显示未配置。
 
-### 3.3 `plugins/` 有两份拷贝，改完必须同步
+### 3.3 插件在磁盘上，只有一份
 
-Go 的 `embed` 不允许嵌上级目录，所以：
+插件**不是**编译进二进制的。运行时只读这两个目录：
 
-- `plugins/*.lua` —— 源，人看的这份
-- `cmd/km/plugins/*.lua` —— 编译进二进制的副本
+```
+%APPDATA%\keep-mirrors\plugins\official\   ← 官方收录，同步会整体重写
+%APPDATA%\keep-mirrors\plugins\user\       ← 用户自带，km 永不写入
+```
 
-**改完源文件必须 `Copy-Item` 同步**，否则改的不生效。测试
-`internal/engine/plugins_test.go` 读的是 `plugins/`，二进制读的是
-`cmd/km/plugins/`，两边不一致时测试绿 but 行为旧。
+`user` 按 id 覆盖 `official`，这是「不修改官方副本也能钉住本地修复」的方式。
 
-（更干净的方案是把 `plugins/` 整个挪进 `cmd/km/`，尚未决定，别擅自改。）
+`internal/plugins/*.lua` 是**种子**，不是运行时来源：首次运行（`official/`
+为空时）释放一次，让离线安装可用。之后它不再参与任何加载流程。
+
+三条由此推出的规则：
+
+- 改行为改磁盘上的文件，不用重新编译。仓库里的 `internal/plugins/*.lua`
+  改完只影响**新安装**，不影响已经播种过的机器。
+- 不要在 `official/` 里手改插件——同步会覆盖。要改就复制到 `user/`。
+- `SeedIfEmpty` 的「目录非空就跳过」是刻意的：它同时保证同步进来的新版本
+  不被回滚、用户删掉的插件不被复活。
 
 ### 3.4 方案集顺序即默认值顺序
 
@@ -170,21 +188,27 @@ UI 会显示「2 处待改」、`apply` 会原样重写一遍文件。
 
 ## 5. 怎么加一个新镜像源
 
-以 conda 为例：
+以 conda 为例。官方收录的源三个地方要改，缺一个就不完整：
 
-1. 复制 `plugins/pip.lua` 为 `plugins/conda.lua`
-2. 改元数据：`M.id = "conda"`、`M.title`、`M.detects`、`M.envs`
+1. 复制 `internal/plugins/pip.lua` 为 `internal/plugins/conda.lua`
+2. 改元数据：`M.id = "conda"`、`M.title`、`M.version`（新插件从 `1.0.0`
+   起）、`M.description`、`M.detects`、`M.envs`
 3. 改 `config_files()` / `find_config()`：找 conda 的配置文件
    （`~/.condarc`），确认语法（YAML）
 4. 改 `M.plan()`：写托管块，`syntax = "yaml"`
 5. 确认 `M.status()` 里的托管块查找用的是 `keep-mirrors:conda`
-6. `Copy-Item plugins\conda.lua cmd\km\plugins\ -Force`
-7. `go test ./internal/engine/ -run TestBuiltinPluginsLoad -v` 必须过
-8. `go test ./cmd/km/` 的往返测试会自动覆盖新插件
-9. 补进 [插件契约](docs/plugin-contract.md) 的源清单
+6. `go test ./internal/engine/ -run TestSeed`——`TestSeedPluginsLoad` 会自动
+   遍历种子包里的每个文件，新插件无需登记就会被测到
+7. `go test ./cmd/km/` 的往返测试会覆盖新插件
+8. 补进 [插件契约](docs/plugin-contract.md) 的源清单
 
 **不要**为它加任何 Go 代码。如果需要 Go 侧能力，先想清楚能不能用现有的
 `km.fs` / `km.env` / `km.exec` / `km.http` 表达。
+
+### 只给自己用的插件
+
+放进 `%APPDATA%\keep-mirrors\plugins\user\`，不必进这个仓库。`user` 按 id
+覆盖 `official`，也不会被同步覆盖。用 `km plugin dir` 查路径。
 
 ---
 
@@ -202,8 +226,9 @@ go build ./... && go vet ./... && go test ./... && gofmt -l .
 
 | 改动 | 必跑 |
 |---|---|
-| 任何 `plugins/*.lua` | `go test ./internal/engine/ -run TestBuiltin` |
+| 任何 `internal/plugins/*.lua` | `go test ./internal/engine/ -run TestSeed` |
 | 沙箱 / `km.*` API | `go test ./internal/engine/ -run TestSandbox` |
+| `Loader` / 播种 / 目录优先级 | `go test ./internal/engine/ -run 'TestSeed\|TestList'` |
 | `internal/core` / `internal/env` | `go test ./cmd/km/ ./internal/core/` |
 | `internal/app` 状态机 | `go test ./internal/app/`（用假 provider，不需要 Lua） |
 | `internal/tui` 渲染 | `go test ./internal/tui/`（用假 provider，不需要终端） |
@@ -231,8 +256,9 @@ go build ./... && go vet ./... && go test ./... && gofmt -l .
 
 - [ ] `go build ./... && go vet ./... && go test ./...` 全绿
 - [ ] `gofmt -l .` 无输出
-- [ ] 改了 `plugins/*.lua` 就同步了 `cmd/km/plugins/`
+- [ ] 改了种子插件，`TestSeedPluginsLoad` 仍然覆盖到它
 - [ ] 新增源在契约文档里登记了
+- [ ] 新插件填了 `version` / `author` / `license` / `description`
 - [ ] 没有用 PowerShell 管道碰含中文的文件
 - [ ] 新代码没有给插件开放写文件能力
 - [ ] 手动 `km undo` 清掉了自己制造的测试配置

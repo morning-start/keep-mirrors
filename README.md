@@ -5,8 +5,21 @@
 ## 为什么是 Lua 插件
 
 加一种新镜像源（比如 conda、maven、deno）不需要改 Go 代码、不需要重新编译：
-在 `plugins/` 下放一个 `.lua` 文件即可。内置的 pip / npm / cargo / go 本身就是普通插件，
-改 `plugins/pip.lua` 保存后重启就生效。
+把 `.lua` 文件放进插件目录即可。pip / npm / cargo / go 本身就是普通插件。
+
+**插件不编译进二进制**，运行时从磁盘加载：
+
+```
+%APPDATA%\keep-mirrors\plugins\
+├── official\      官方收录，同步更新会整体重写
+└── user\          你自己的，km 永不写入，同名覆盖 official
+```
+
+`km plugin dir` 打印这两个路径。改磁盘上的文件，下次运行就生效——不用重编译，
+这就是后续热重载与从插件库同步的基础。
+
+仓库里的 `internal/plugins/*.lua` 是**种子快照**：首次运行（`official/` 为空）
+释放一次，让离线安装可用。之后它不再参与加载，所以改种子只影响新安装的机器。
 
 插件**永远不直接写文件**。它调用 `km.plan.*` 声明"我想改这个文件的这个键"，
 Go 侧负责：先备份 → 给你看 diff → 确认后原子写入。所以一个写错的插件也改不坏你的配置文件。
@@ -48,18 +61,18 @@ go build -o km ./cmd/km
 keep-mirrors/
 ├── cmd/km/            # 入口（TUI + 无头子命令）
 ├── internal/
-│   ├── paths/         # ~ 解析、应用数据目录、home 边界检查
+│   ├── paths/         # ~ 解析、应用数据目录、插件目录、home 边界检查
 │   ├── fsutil/        # 原子写（tmp → fsync → rename）、模式保持
 │   ├── marker/        # 托管块编辑器：# >>> keep-mirrors:pip >>> ... <<< <<<
 │   ├── config/        # INI / TOML / KV / YAML 的最小渲染与读回
 │   ├── env/           # 环境变量：Windows HKCU + 广播；POSIX profile 块
 │   ├── core/          # Plan / Diff / Apply / Backup / Undo
-│   ├── provider/      # Provider 接口（与 Lua 契约 1:1 对应）
-│   ├── engine/        # gopher-lua 沙箱、km.* API 绑定、插件加载
+│   ├── provider/      # Provider 接口与 Meta（与 Lua 契约 1:1 对应）
+│   ├── engine/        # gopher-lua 沙箱、km.* API 绑定、插件加载与播种
+│   ├── plugins/       # 官方插件种子快照（embed，首次运行才用到）
 │   ├── registry/      # 已加载插件的集合
 │   ├── app/           # 状态机（TUI 与无头模式共用）
 │   └── tui/           # bubbletea 界面
-└── plugins/           # Lua 插件（cmd/km/plugins 是构建时的 embed 副本）
 ```
 
 ## 配置写入方式
@@ -79,10 +92,12 @@ trusted-host = pypi.tuna.tsinghua.edu.cn
 ## 状态与备份
 
 ```
-~/.config/keep-mirrors/
+%APPDATA%\keep-mirrors\            （POSIX: ~/.config/keep-mirrors）
 ├── backups/<时间戳>/     # 每次 apply 前自动快照（原文件 + 原环境变量）
 │   └── manifest.txt     # 记录改了什么、环境变量原值是什么
-└── plugins/             # 用户插件，同名覆盖内置
+└── plugins/
+    ├── official/        # 官方插件，同步会整体重写
+    └── user/            # 你自己的，km 永不写入，同名覆盖 official
 ```
 
 ## 插件开发
@@ -107,10 +122,17 @@ return M
 ## 当前状态
 
 已完成：Lua 沙箱与契约、pip / npm / cargo / go 四个插件、托管块写入、备份撤销、
-环境变量（Windows HKCU + POSIX profile）、测速、TUI、无头 CLI。
+环境变量（Windows HKCU + POSIX profile）、测速、TUI、无头 CLI、
+插件目录分离（official / user）与首次运行播种。
 
-计划中：热重载（fsnotify watch plugins/）、更多源（maven / gradle / gem / conda / apt / docker /
-pnpm / deno）、方案集一键切换、命名快照导入导出。
+计划中：
+
+- **从插件库同步**：官方插件托管在独立的 GitHub 仓库，`km plugin sync` 比对
+  远端 commit SHA，不一致就按该 SHA 拉取，避免与分支更新竞争
+- **热重载**：轮询插件目录 mtime，文件变化即重新编译并替换 provider
+- 本地导入：`km plugin import <path>`
+- 更多源（maven / gradle / gem / conda / apt / docker / pnpm / deno）、
+  方案集一键切换、命名快照导入导出
 
 ## 文档
 
@@ -120,10 +142,7 @@ pnpm / deno）、方案集一键切换、命名快照导入导出。
 | [docs/plugin-contract.md](docs/plugin-contract.md) | 插件契约 v1：元数据、三个函数、change 类型、`km.*` API、沙箱限制、排错表 |
 | [AGENTS.md](AGENTS.md) | 给 AI agent 的工作指引：硬约束、真实踩过的坑、加新源的步骤、提交前自查 |
 
-> **注意**：`plugins/` 和 `cmd/km/plugins/` 是两份内容相同的目录。前者是源，
-> 后者是 `go:embed` 编译进二进制的副本（Go 不允许 embed 上级目录）。
-> **改了前者必须同步后者**：
->
-> ```bash
-> Copy-Item plugins\*.lua cmd\km\plugins\ -Force
-> ```
+> **注意**：仓库里的 `internal/plugins/` 是**种子快照**，不是运行时来源。
+> 它只在首次运行（`official/` 为空）时释放一次；之后改它不会影响已经播种过的
+> 机器。要改当前行为，直接编辑 `%APPDATA%\keep-mirrors\plugins\` 下的文件，
+> 或把改好的插件放进 `user/` 以免被同步覆盖。
