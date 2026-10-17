@@ -1,8 +1,11 @@
 package tui
 
 import (
+	"strings"
+
 	"keep-mirrors/internal/app"
 	"keep-mirrors/internal/core"
+	"keep-mirrors/internal/paths"
 )
 
 // ChangeView is a flattened, rendering-friendly form of core.Change. The
@@ -57,9 +60,9 @@ func benchViews(rs []app.BenchRow) []BenchView {
 
 // shortPath renders a path relative to home for display.
 func shortPath(p string) string {
-	h := homeDir()
-	if h != "" && len(p) > len(h) && p[:len(h)] == h {
-		return "~" + p[len(h):]
+	h := paths.Home()
+	if h != "" && strings.HasPrefix(p, h) {
+		return "~" + strings.TrimPrefix(p, h)
 	}
 	return p
 }

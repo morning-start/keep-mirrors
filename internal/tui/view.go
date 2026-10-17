@@ -81,8 +81,9 @@ var (
 
 // ── rendering ──────────────────────────────────────────────────────────
 
-// View renders the whole screen.
-func View(m *app.Model) string {
+// View renders the whole screen. filtering/draft drive the filter prompt that
+// replaces the status bar while the user is typing.
+func View(m *app.Model, filtering bool, draft string) string {
 	if m.Quit {
 		return ""
 	}
@@ -114,7 +115,19 @@ func View(m *app.Model) string {
 	right = padHeight(right, bodyH)
 
 	row := lipgloss.JoinHorizontal(lipgloss.Top, left, right)
+	if filtering {
+		return row + "\n" + renderFilterBar(draft, w)
+	}
 	return row + "\n" + renderBar(m, w)
+}
+
+// renderFilterBar draws the filter prompt in the status bar.
+func renderFilterBar(draft string, width int) string {
+	label := styleLabel.Render("/ ") + styleValue.Render(draft) + styleMuted.Render("▏")
+	hint := styleMuted.Render("enter 确认 · esc 取消")
+	bar := lipgloss.JoinHorizontal(lipgloss.Center, label,
+		strings.Repeat(" ", maxInt(1, width-lipgloss.Width(label)-lipgloss.Width(hint))), hint)
+	return styleBar.Width(width).Render(bar)
 }
 
 // renderList draws the provider tree.
@@ -227,10 +240,14 @@ func renderDetail(m *app.Model, width, height int) string {
 			b.WriteString("\n")
 		}
 	}
-	// Warnings.
-	for _, w := range m.Plan.Warnings {
-		b.WriteString(styleWarn.Render("  ⚠ " + truncate(w, width-8)))
-		b.WriteString("\n")
+
+	// Warnings. m.Plan is nil whenever the last plan failed, and PlanErr is
+	// rendered above in that case, so guard before walking it.
+	if m.Plan != nil {
+		for _, w := range m.Plan.Warnings {
+			b.WriteString(styleWarn.Render("  ⚠ " + truncate(w, width-8)))
+			b.WriteString("\n")
+		}
 	}
 
 	return b.String()
@@ -306,14 +323,19 @@ func categoryLabel(c provider.Category) string {
 	}
 }
 
+// statusBadge renders the two independent facts a provider reports: whether
+// its toolchain is present, and whether a mirror is configured. "Configured"
+// wins because that is what the user is actually looking at, and a configured
+// pip whose interpreter is off PATH is still configured.
 func statusBadge(s provider.Status) string {
-	if !s.Installed {
+	switch {
+	case s.Current != "":
+		return styleOK.Render("● 已配置")
+	case s.Installed:
+		return styleMuted.Render("○ 未配置")
+	default:
 		return styleMuted.Render("○ 未安装")
 	}
-	if s.Current == "" {
-		return styleMuted.Render("○ 未配置")
-	}
-	return styleOK.Render("● 已配置")
 }
 
 func truncate(s string, n int) string {
