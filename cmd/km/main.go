@@ -14,15 +14,19 @@
 //	km apply <id>       apply a preset (--preset to choose, --yes to skip the prompt)
 //	km bench <id>       measure every preset endpoint
 //	km undo             restore the most recent backup
+//	km plugin dir       print the plugin directories
 //	km plugin list      list the loaded plugins
 //	km plugin show <id> print a plugin's metadata
+//	km plugin sync      pull the curated plugin set from the plugin branch
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"sort"
 	"strings"
+	"time"
 
 	"keep-mirrors/internal/app"
 	"keep-mirrors/internal/core"
@@ -30,6 +34,7 @@ import (
 	"keep-mirrors/internal/plugins"
 	"keep-mirrors/internal/provider"
 	"keep-mirrors/internal/registry"
+	"keep-mirrors/internal/syncs"
 	"keep-mirrors/internal/tui"
 )
 
@@ -375,7 +380,7 @@ func cmdBackups(args []string) error {
 
 func cmdPlugin(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("plugin requires a subcommand: list | show <id> | dir")
+		return fmt.Errorf("plugin requires a subcommand: list | show <id> | dir | sync")
 	}
 	loader := newLoader()
 	switch args[0] {
@@ -386,6 +391,9 @@ func cmdPlugin(args []string) error {
 		fmt.Printf("official  %s\n", loader.OfficialPluginDir())
 		fmt.Printf("user      %s\n", loader.UserPluginDir())
 		return nil
+
+	case "sync":
+		return cmdPluginSync(args[1:])
 
 	case "list":
 		for _, s := range loader.List() {
@@ -446,7 +454,88 @@ func orDash(s string) string {
 	return s
 }
 
+// cmdPluginSync pulls the curated plugin set from the project's plugin branch.
+//
+// This is how a running binary catches up with plugin changes that landed after
+// its release. It is deliberately not required for first use: the embedded
+// snapshot means the tool works offline, and sync is the catch-up path rather
+// than a prerequisite.
+func cmdPluginSync(args []string) error {
+	var (
+		dryRun bool
+		force  bool
+		branch string
+		repo   string
+	)
+	for i := 0; i < len(args); i++ {
+		switch a := args[i]; {
+		case a == "--dry-run", a == "-n":
+			dryRun = true
+		case a == "--force", a == "-f":
+			force = true
+		case strings.HasPrefix(a, "--branch="):
+			branch = strings.TrimPrefix(a, "--branch=")
+		case a == "--branch":
+			if i+1 >= len(args) {
+				return fmt.Errorf("--branch requires a value")
+			}
+			i++
+			branch = args[i]
+		case strings.HasPrefix(a, "--repo="):
+			repo = strings.TrimPrefix(a, "--repo=")
+		default:
+			return fmt.Errorf("unknown flag %q", a)
+		}
+	}
+
+	cfg := syncs.DefaultConfig()
+	if branch != "" {
+		cfg.Branch = branch
+	}
+	if repo != "" {
+		cfg.Repo = repo
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	res, err := syncs.Run(ctx, syncs.Options{
+		Config: cfg,
+		DryRun: dryRun,
+		Force:  force,
+	})
+	if err != nil {
+		return err
+	}
+
+	switch {
+	case res.Updated:
+		fmt.Printf("updated %d plugin(s) from %s@%s\n",
+			len(res.Files), cfg.Branch, shortSHA(res.SHA))
+		if res.Version != "" {
+			fmt.Printf("plugin set version: %s\n", res.Version)
+		}
+		fmt.Println("the running TUI reloads automatically; restart only if it is not open")
+	case res.SHA == res.Before:
+		fmt.Printf("already up to date (%s@%s)\n", cfg.Branch, shortSHA(res.SHA))
+	case dryRun:
+		fmt.Printf("would update to %s@%s\n", cfg.Branch, shortSHA(res.SHA))
+	}
+	if dryRun && res.SHA != res.Before {
+		fmt.Println("(dry run: nothing was written)")
+	}
+	return nil
+}
+
 // ── helpers ────────────────────────────────────────────────────────────
+
+// shortSHA abbreviates a commit SHA for display.
+func shortSHA(s string) string {
+	if len(s) > 7 {
+		return s[:7]
+	}
+	return s
+}
 
 // reportBroken prints plugins that failed to load. Silent failure would make
 // a typo in a plugin invisible.
@@ -600,11 +689,18 @@ usage:
   km bench <id>         measure every preset endpoint
   km undo               restore the most recent backup
   km backups            list backups
+  km plugin dir         print the plugin directories
   km plugin list        list loaded plugins
   km plugin show <id>   print a plugin's metadata
+  km plugin sync        pull the curated plugin set from the plugin branch
 
 flags for apply:
   --preset=<id>         choose the preset (default: the first one)
   --yes, -y             skip the confirmation prompt
+
+flags for plugin sync:
+  --dry-run, -n         resolve and validate without writing anything
+  --force, -f           re-download even when already up to date
+  --branch=<name>       sync a different branch
 `)
 }
