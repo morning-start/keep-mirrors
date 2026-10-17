@@ -2,12 +2,9 @@ package core
 
 import (
 	"fmt"
-	"os"
 
-	"keep-mirrors/internal/config"
 	"keep-mirrors/internal/env"
 	"keep-mirrors/internal/fsutil"
-	"keep-mirrors/internal/marker"
 )
 
 // Apply executes a described plan, taking a backup first.
@@ -54,42 +51,6 @@ func Apply(p *Plan) (*Backup, error) {
 		}
 	}
 	return bak, nil
-}
-
-// ApplyFile writes a single managed block. It is the primitive the providers
-// use for "make sure this file contains this setting", independent of any
-// plan, and is what the engine uses for one-off repairs.
-func ApplyFile(file string, f marker.Format, cf config.Format, block string, entries ...config.Entry) error {
-	cur, err := fsutil.Read(file)
-	if err != nil {
-		return err
-	}
-	body := config.Render(cf, entries)
-	out := marker.Replace(cur, marker.Block{Name: block, Format: f, Body: body})
-	if out == cur {
-		return nil
-	}
-	return fsutil.WriteFile(file, out, 0)
-}
-
-// ClearFile removes a managed block from a file, if present.
-func ClearFile(file string, f marker.Format, block string) (bool, error) {
-	cur, err := fsutil.Read(file)
-	if err != nil {
-		return false, err
-	}
-	out := marker.Remove(cur, block, f)
-	if out == cur {
-		return false, nil
-	}
-	if out == "" {
-		// An empty file is worse than no file for tools that stat it.
-		if err := os.Remove(file); err != nil && !os.IsNotExist(err) {
-			return false, err
-		}
-		return true, nil
-	}
-	return true, fsutil.WriteFile(file, out, 0)
 }
 
 // Undo restores a backup.

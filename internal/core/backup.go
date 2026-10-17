@@ -8,10 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"keep-mirrors/internal/config"
 	"keep-mirrors/internal/env"
 	"keep-mirrors/internal/fsutil"
-	"keep-mirrors/internal/marker"
 	"keep-mirrors/internal/paths"
 )
 
@@ -144,22 +142,6 @@ func (b *Backup) Restore() error {
 }
 
 // Prune keeps the newest keep backups and deletes the rest.
-func Prune(keep int) (int, error) {
-	list, err := ListBackups()
-	if err != nil {
-		return 0, err
-	}
-	if keep <= 0 || len(list) <= keep {
-		return 0, nil
-	}
-	removed := 0
-	for _, b := range list[keep:] {
-		if err := os.RemoveAll(b.Root()); err == nil {
-			removed++
-		}
-	}
-	return removed, nil
-}
 
 // ListBackups returns all backups, newest first.
 func ListBackups() ([]*Backup, error) {
@@ -228,10 +210,3 @@ func backupRel(p string) string {
 	rest = strings.TrimPrefix(rest, string(filepath.Separator))
 	return filepath.Join("abs", vol, rest)
 }
-
-// unused keeps the imports that are only referenced by future steps honest.
-var (
-	_ = config.FormatINI
-	_ = marker.Hash
-	_ = paths.AppDir
-)

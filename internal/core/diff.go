@@ -3,8 +3,6 @@ package core
 import (
 	"fmt"
 	"os"
-	"path/filepath"
-	"sort"
 	"strings"
 
 	"keep-mirrors/internal/config"
@@ -17,42 +15,63 @@ import (
 // reading current on-disk state. It must be called before rendering a diff,
 // and again immediately before applying, so the diff cannot go stale relative
 // to what actually gets written.
+//
+// Changes that would not alter anything are dropped. Without that, a preset
+// that is already in effect still yields a non-empty plan, which makes the UI
+// claim there is work to do and makes apply rewrite identical bytes.
 func (p *Plan) Describe() error {
+	kept := p.Changes[:0]
 	for i := range p.Changes {
-		c := &p.Changes[i]
-		switch c.Kind {
-		case ChangeConfig:
-			cur, err := fsutil.Read(c.File)
-			if err != nil {
-				return fmt.Errorf("read %s: %w", c.File, err)
-			}
-			c.Before = cur
-			body := config.Render(c.CF, c.Entries)
-			blk := marker.Block{Name: c.Block, Format: c.Format, Body: body}
-			c.After = marker.Replace(cur, blk)
-			c.Summary = describeConfig(c, body)
-
-		case ChangeEnv:
-			cur, err := readEnv(c.Name)
-			if err != nil {
-				return err
-			}
-			c.Before = cur
-			c.After = c.Value
-			c.Summary = fmt.Sprintf("env %s: %s -> %s", c.Name, orUnset(c.Before), c.Value)
-
-		case ChangeEnvUnset:
-			cur, err := readEnv(c.Name)
-			if err != nil {
-				return err
-			}
-			c.Before = cur
-			c.After = ""
-			c.Summary = fmt.Sprintf("env %s: remove (%s)", c.Name, orUnset(c.Before))
+		c := p.Changes[i]
+		if err := c.describe(); err != nil {
+			return err
 		}
+		if c.Unchanged() {
+			continue
+		}
+		kept = append(kept, c)
+	}
+	p.Changes = kept
+	return nil
+}
+
+// describe computes Before/After/Summary for one change against the current
+// on-disk state.
+func (c *Change) describe() error {
+	switch c.Kind {
+	case ChangeConfig:
+		cur, err := fsutil.Read(c.File)
+		if err != nil {
+			return fmt.Errorf("read %s: %w", c.File, err)
+		}
+		c.Before = cur
+		body := config.Render(c.CF, c.Entries)
+		c.After = marker.Replace(cur, marker.Block{Name: c.Block, Format: c.Format, Body: body})
+		c.Summary = describeConfig(c, body)
+
+	case ChangeEnv:
+		cur, err := readEnv(c.Name)
+		if err != nil {
+			return err
+		}
+		c.Before = cur
+		c.After = c.Value
+		c.Summary = fmt.Sprintf("env %s: %s -> %s", c.Name, orUnset(c.Before), c.Value)
+
+	case ChangeEnvUnset:
+		cur, err := readEnv(c.Name)
+		if err != nil {
+			return err
+		}
+		c.Before = cur
+		c.After = ""
+		c.Summary = fmt.Sprintf("env %s: remove (%s)", c.Name, orUnset(c.Before))
 	}
 	return nil
 }
+
+// Unchanged reports whether applying c would leave the world exactly as it is.
+func (c Change) Unchanged() bool { return c.Before == c.After }
 
 func orUnset(v string) string {
 	if v == "" {
@@ -81,15 +100,24 @@ func displayPath(p string) string {
 	return p
 }
 
-// readEnv reads a variable the way the target platform stores it, so the
-// diff compares persisted state rather than this process's environment.
+// readEnv reads a variable the way the target platform persists it.
+//
+// The persisted store is consulted first, deliberately. Our own process
+// environment is written by every apply (so the value takes effect without a
+// new terminal), which means os.Getenv would report the value *we* just wrote
+// as if the user already had it. The registry / profile is what a fresh shell
+// would see, and that is the thing the diff is about.
 func readEnv(name string) (string, error) {
-	if v := os.Getenv(name); v != "" {
+	v, err := readPersistedEnv(name)
+	if err != nil {
+		return "", err
+	}
+	if v != "" {
 		return v, nil
 	}
-	// Fall back to the platform store so an unset-in-process but persisted
-	// variable still shows up as a change rather than as "unset -> set".
-	return readPersistedEnv(name)
+	// Not persisted anywhere yet: a value exported in the current session is
+	// still worth showing, because the plugin will overwrite it.
+	return os.Getenv(name), nil
 }
 
 // Diff renders a unified diff of Before/After for one change. It is a
@@ -123,36 +151,16 @@ func Diff(c Change) string {
 	return strings.TrimRight(b.String(), "\n")
 }
 
-// blockSlice extracts the managed block (or the whole file when the block is
-// absent) from lines.
+// blockSlice extracts the managed block from lines, or nil when there is no
+// block to show. Diffing the whole untouched file would bury the change in
+// context the user did not ask about.
 func blockSlice(lines []string, c Change) []string {
 	content := strings.Join(lines, "\n")
-	body := config.Render(c.CF, c.Entries)
-	blk := marker.Block{Name: c.Block, Format: c.Format, Body: body}
-	if !marker.Present(content, blk) {
-		if start, end, ok := marker.Find(content, c.Block, c.Format); ok {
-			return lines[start:end]
-		}
+	start, end, ok := marker.Find(content, c.Block, c.Format)
+	if !ok {
+		return nil
 	}
-	if start, end, ok := marker.Find(content, c.Block, c.Format); ok {
-		return lines[start:end]
-	}
-	return nil
-}
-
-// SortChanges orders changes so that files are grouped by path, making the
-// diff view and the backup manifest easier to read.
-func (p *Plan) SortChanges() {
-	sort.SliceStable(p.Changes, func(i, j int) bool {
-		a, b := p.Changes[i], p.Changes[j]
-		if a.Kind != b.Kind {
-			return a.Kind < b.Kind
-		}
-		if a.File != b.File {
-			return a.File < b.File
-		}
-		return a.Name < b.Name
-	})
+	return lines[start:end]
 }
 
 // Files returns the distinct files touched by the plan.
@@ -168,10 +176,3 @@ func (p *Plan) Files() []string {
 	}
 	return out
 }
-
-// FileExists reports whether p exists, used by the UI to distinguish "will
-// create" from "will modify".
-func FileExists(p string) bool { return fsutil.Exists(p) }
-
-// BaseName is a convenience for rendering file paths in the status bar.
-func BaseName(p string) string { return filepath.Base(p) }
