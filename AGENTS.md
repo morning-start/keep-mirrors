@@ -41,6 +41,8 @@ go build -o km.exe ./cmd/km                       # 产出可执行
 .\km.exe plugin dir                               # 两个插件目录在哪
 .\km.exe plugin list                              # 已加载插件与来源
 .\km.exe plugin show pip                          # 元数据全貌
+.\km.exe plugin sync --dry-run                    # 远端有没有新插件（不写盘）
+.\km.exe plugin sync                              # 拉 plugins 分支的最新插件
 
 # 改了 internal/plugins/*.lua 只影响新安装；要验证当前机器，
 # 直接改 %APPDATA%\keep-mirrors\plugins\official\ 下的文件（不用重编译），
@@ -130,6 +132,54 @@ watcher 坏了而不是漏了一个返回值。`TestTickPollsAndRearms` 守这�
 
 编辑出错（编辑器保存了半个文件）不该把插件全下掉：能编译的照常加载，坏的报
 在诊断里，调用方继续用上一份好的集合。一个插件的语法错误不该让界面变空。
+
+### 3.7 插件分支与同步
+
+官方插件有两个来源，分工不同：
+
+```
+plugins 分支          ← 权威源，可独立演化，不受发版节奏约束
+internal/plugins/     ← 打 tag 时的快照，编译进二进制作为种子
+```
+
+`km plugin sync` 拉 `plugins` 分支的最新提交。**用 git ls-remote + raw
+URL，不走 REST API**：前者的匿名配额只有 60 次/小时，后者完全免费。用户
+装上就能用，不需要 token 或 gh。
+
+三条必须保持的约束：
+
+**1. 插件不能领先于代码的能力。**
+
+`api.major` 表示「需要哪个版本的 km.* 面」，而 km.* 只存在于 Go 源码里。
+插件作者写 `km.foo()` 而二进制没有实现，运行时就是 `attempt to call a nil
+value`。所以顺序是物理上单向的：**先改 Go 加能力，再改插件用上**。
+
+不需要靠纪律维持，但 `syncs.validatePlugin` 仍会在写入前编译并调用
+`status()`/`plan()` 做兜底，防止手滑写错 `api.major`。
+
+**2. 同步是全量校验后才落盘。**
+
+任何一个插件校验失败，整批都不写。半个有效的插件集比拒绝同步更难诊断。
+
+**3. 不能静默丢源。**
+
+分支上少了 `knownPlugins` 里的任何一个 id，同步就拒绝。一个源悄悄消失，
+几乎总是上游的失误，而不是有意删除。
+
+改插件的工作流：
+
+```bash
+git checkout plugins
+# 改 internal/plugins/*.lua
+git commit -am "plugin: ..."
+git push origin plugins
+
+# 打 tag 前，把插件同步回 master（否则种子是旧的，新装用户开箱即用拿到旧版）
+git checkout master
+git checkout plugins -- internal/plugins/
+git commit -m "release: sync plugins from plugins branch"
+git tag v1.2.0 && git push origin master --tags
+```
 
 ---
 
@@ -266,6 +316,7 @@ go build ./... && go vet ./... && go test ./... && gofmt -l .
 | 热重载逻辑 | `go test ./internal/engine/ -run TestReload` |
 | tick 循环 / 重载 UI 契约 | `go test ./internal/tui/ ./internal/app/` |
 | 热重载端到端 | `go test ./cmd/km/ -run TestHotReload` |
+| 插件同步 | `go test ./internal/syncs/` |
 | `internal/core` / `internal/env` | `go test ./cmd/km/ ./internal/core/` |
 | `internal/app` 状态机 | `go test ./internal/app/`（用假 provider，不需要 Lua） |
 | `internal/tui` 渲染 | `go test ./internal/tui/`（用假 provider，不需要终端） |
@@ -297,6 +348,7 @@ go build ./... && go vet ./... && go test ./... && gofmt -l .
 - [ ] 新增源在契约文档里登记了
 - [ ] 新插件填了 `version` / `author` / `license` / `description`
 - [ ] 动过 tick / 重载，`TestTickPollsAndRearms` 与 `TestReload*` 仍通过
+- [ ] 动过同步，`TestSync*` 仍通过（尤其「不兼容契约必须被拒绝」）
 - [ ] 没有用 PowerShell 管道碰含中文的文件
 - [ ] 新代码没有给插件开放写文件能力
 - [ ] 手动 `km undo` 清掉了自己制造的测试配置

@@ -123,15 +123,24 @@ return M
 
 已完成：Lua 沙箱与契约、pip / npm / cargo / go 四个插件、托管块写入、备份撤销、
 环境变量（Windows HKCU + POSIX profile）、测速、TUI、无头 CLI、
-插件目录分离（official / user）、首次运行播种、**热重载**。
+插件目录分离（official / user）、首次运行播种、热重载、**从插件分支同步**。
 
 热重载：TUI 每秒检查一次插件目录，保存文件后界面会自动用上新版本，不用重启。
 用官方插件请复制到 `user/` 再改——`official/` 会被同步整体重写。
 
+插件同步：
+
+```bash
+km plugin sync --dry-run   # 先看远端有没有更新
+km plugin sync             # 拉 plugins 分支的最新插件
+```
+
+官方插件在 `plugins` 分支上独立演化，不受发版节奏约束。同步走 `git ls-remote`
+和 raw URL，**不需要 token，也不消耗 GitHub API 配额**。写入前逐个编译校验，
+任何一个不兼容就整批拒绝，不会留下半个可用的插件集。
+
 计划中：
 
-- **从插件库同步**：官方插件托管在独立的 GitHub 仓库，`km plugin sync` 比对
-  远端 commit SHA，不一致就按该 SHA 拉取，避免与分支更新竞争
 - 本地导入：`km plugin import <path>`
 - 更多源（maven / gradle / gem / conda / apt / docker / pnpm / deno）、
   方案集一键切换、命名快照导入导出
