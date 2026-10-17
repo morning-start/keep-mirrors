@@ -399,6 +399,15 @@ func cmdPlugin(args []string) error {
 		for _, s := range loader.List() {
 			fmt.Printf("%-12s %-9s %s\n", s.ID, s.Origin, s.Path)
 		}
+		// The provenance line answers "which plugin set is this", which is the
+		// first question when a mirror URL looks wrong or a plugin is missing.
+		if st, err := syncs.LoadState(); err == nil && st.SHA != "" {
+			origin := "synced"
+			if st.FromSeed {
+				origin = "shipped with this binary"
+			}
+			fmt.Printf("\nplugin set %s (%s)\n", shortSHA(st.SHA), origin)
+		}
 		return nil
 
 	case "show":
@@ -431,6 +440,13 @@ func cmdPlugin(args []string) error {
 		// Everything below is supplementary: read when someone asks about a
 		// plugin, never while rendering the list.
 		fmt.Println()
+		if st, err := syncs.LoadState(); err == nil && st.SHA != "" {
+			origin := "synced"
+			if st.FromSeed {
+				origin = "shipped with this binary"
+			}
+			fmt.Printf("source      %s (%s)\n", shortSHA(st.SHA), origin)
+		}
 		fmt.Printf("author      %s\n", orDash(m.Author))
 		fmt.Printf("license     %s\n", orDash(m.License))
 		fmt.Printf("homepage    %s\n", orDash(m.Homepage))

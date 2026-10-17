@@ -20,6 +20,9 @@ type Result struct {
 	// Before and After are the commit SHAs around the sync; Before is empty on
 	// a first sync.
 	Before string
+	// FromSeed reports that Before came from the snapshot compiled into the
+	// binary rather than from a previous sync.
+	FromSeed bool
 	// Files lists the plugin files written.
 	Files []string
 	// Version is the plugin set version, when the set declares one.
@@ -74,6 +77,7 @@ func run(ctx context.Context, r remote, cfg Config, opts Options) (Result, error
 		return res, err
 	}
 	res.Before = prev.SHA
+	res.FromSeed = prev.FromSeed
 
 	sha, err := r.BranchSHA(ctx, cfg.Repo, cfg.Branch)
 	if err != nil {

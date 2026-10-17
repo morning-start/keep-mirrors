@@ -185,7 +185,7 @@ func TestSyncDryRunWritesNothing(t *testing.T) {
 	if len(entries) != 0 {
 		t.Errorf("a dry run wrote %d files", len(entries))
 	}
-	if st, _ := LoadState(); st.SHA != "" {
+	if stateFileExists() {
 		t.Error("a dry run recorded sync state")
 	}
 }
@@ -209,7 +209,7 @@ func TestSyncRejectsIncompatibleContract(t *testing.T) {
 		t.Errorf("error = %v, want it to mention the contract", err)
 	}
 	assertDirEmpty(t, dir, "a rejected sync left files behind")
-	if st, _ := LoadState(); st.SHA != "" {
+	if stateFileExists() {
 		t.Error("a rejected sync recorded state")
 	}
 }
@@ -262,7 +262,7 @@ func TestSyncRefusesToDropShippedSources(t *testing.T) {
 	// fetch rather than from the completeness check. Either way nothing is
 	// written, which is what matters.
 	assertDirEmpty(t, dir, "a refused sync left files behind")
-	if st, _ := LoadState(); st.SHA != "" {
+	if stateFileExists() {
 		t.Error("a refused sync recorded state")
 	}
 }
@@ -309,8 +309,14 @@ func TestSyncStateSurvivesCorruption(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadState on corrupt file: %v", err)
 	}
-	if st.SHA != "" {
-		t.Error("a corrupt state file produced a SHA")
+	// A corrupt file falls back to the seed, so the install still knows which
+	// snapshot it carries. What must not happen is an error, which would make
+	// sync impossible to run at all.
+	if st.SHA == "" {
+		t.Error("a corrupt state file left the install with no known snapshot")
+	}
+	if !st.FromSeed {
+		t.Error("the fallback did not identify itself as coming from the seed")
 	}
 }
 
@@ -375,4 +381,14 @@ func assertDirEmpty(t *testing.T, dir, msg string) {
 	if len(got) > 0 {
 		t.Errorf("%s: %v", msg, got)
 	}
+}
+
+// stateFileExists reports whether a sync state file has been written.
+//
+// Assertions about "nothing was recorded" use this rather than LoadState().SHA:
+// with no state file LoadState falls back to the embedded snapshot, which is a
+// real SHA and is not evidence that a sync happened.
+func stateFileExists() bool {
+	_, err := os.Stat(filepath.Join(paths.AppDir(), "plugins-sync.json"))
+	return err == nil
 }
