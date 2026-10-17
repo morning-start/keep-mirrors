@@ -94,7 +94,7 @@ section-aware 的结构化改写（且必定先备份）。
 | `config` | 四种语法的渲染与读回 | 已带引号的值不重复引号；读回时跳过无法解析的行而不是报错 |
 | `env` | 环境变量读写与广播 | Windows 写 `HKCU\Environment` + `WM_SETTINGCHANGE`；POSIX 写 profile 托管块 |
 | `core` | Plan、Diff、Apply、Backup、Undo | Apply 前必 `Describe`；备份先于任何修改 |
-| `provider` | Provider 接口 + 通用工具 | 接口字段与 Lua 契约 1:1 |
+| `provider` | Provider 接口、`Preset` / `Setting` / `Status` 数据类型 | 接口字段与 Lua 契约 1:1；预设顺序即默认值顺序，不排序 |
 | `engine` | gopher-lua 沙箱、`km.*` 绑定、加载器 | 每个插件独立 `LState`；调用串行化；带 deadline |
 | `registry` | 已加载插件的集合 | 同名 id 后者胜出（用户覆盖内置） |
 | `app` | 状态机 | TUI 与 CLI 共用；所有文件访问都经由 provider |
@@ -246,8 +246,8 @@ HOME/APPDATA/CARGO_HOME/GOENV 全指到临时目录；注册表则改为断言�
 | 用户配置根 | `%APPDATA%` | `$XDG_CONFIG_HOME` 或 `~/.config` |
 | profile 文件 | `$PROFILE` 或 `Documents\WindowsPowerShell\*.ps1` | `.bashrc` / `.zshrc` / `config.fish` |
 
-平台分支全部收在 `internal/env`、`internal/provider/files_*.go` 和
-`internal/core/env_*.go` 三个地方，provider 逻辑本身不判断平台——它只读
+平台分支全部收在 `internal/env`（`env_windows.go` / `env_posix.go`）和
+`internal/core/env_*.go` 两个地方，provider 逻辑本身不判断平台——它只读
 `ctx.Platform`。
 
 ---

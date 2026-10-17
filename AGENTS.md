@@ -147,6 +147,25 @@ return 几。**
 断言「撤销后恢复到 apply 前的值」。文件系统部分用 `sandbox()`（见
 `cmd/km/e2e_test.go`）重定向 HOME。
 
+### 4.7 `Describe()` 会丢掉无变化的 change
+
+`Plan.Describe()` 除了填 `Before`/`After`，还会**移除 `Before == After`
+的 change**。这是有意的：否则一个已经生效的方案集仍然会产出非空计划，
+UI 会显示「2 处待改」、`apply` 会原样重写一遍文件。
+
+两个后果要记住：
+
+- 不要为了「显示得完整」而在 `Describe` 之后手动补 change，它们会被下一
+  次 `Describe` 删掉；
+- 判断「这个方案集是否已生效」用 `plan.Empty()`，不要自己比对字段。
+
+### 4.8 测速结果必须经消息回到 UI 线程
+
+`app.RunBenchmark()` 返回 `tea.Cmd`，结果以 `app.BenchDoneMsg` 回到
+`Update`，再由 `ApplyBench` 落到 model。**不要**在 goroutine 里直接写
+`m.Bench` / `m.BenchRunning`——那与 `View` 并发读同一个 struct，是数据
+竞争（本机无 gcc，`-race` 跑不起来，所以只能靠约定）。
+
 ---
 
 ## 5. 怎么加一个新镜像源
@@ -185,8 +204,13 @@ go build ./... && go vet ./... && go test ./... && gofmt -l .
 |---|---|
 | 任何 `plugins/*.lua` | `go test ./internal/engine/ -run TestBuiltin` |
 | 沙箱 / `km.*` API | `go test ./internal/engine/ -run TestSandbox` |
-| `internal/core` / `internal/env` | `go test ./cmd/km/` |
-| `internal/tui` / `internal/app` | `go build ./...`（暂无测试，靠 `km list` 手验） |
+| `internal/core` / `internal/env` | `go test ./cmd/km/ ./internal/core/` |
+| `internal/app` 状态机 | `go test ./internal/app/`（用假 provider，不需要 Lua） |
+| `internal/tui` 渲染 | `go test ./internal/tui/`（用假 provider，不需要终端） |
+
+`internal/app` 和 `internal/tui` 用各自测试文件里的假 provider，所以它们的
+测试既不加载 Lua 也不碰真实 home，跑得很快。改动签名时这两个包的编译失败
+就是最直接的回归信号。
 
 新增 capability 到 `km.*` 时，**必须**同时加一条沙箱测试证明它不能被滥用。
 
