@@ -65,15 +65,19 @@ func TestStatusReadBack(t *testing.T) {
 			continue
 		}
 
-		opts := presetOpts(p, "")
+		opts, pid, err := resolvePreset(p, "")
+		if err != nil {
+			t.Fatalf("%s: resolvePreset: %v", id, err)
+		}
 		if len(opts) == 0 {
-			t.Errorf("%s: presetOpts returned no options; presets=%v", id, p.Presets())
+			t.Errorf("%s: resolvePreset returned no options; presets=%v", id, p.Presets())
 			continue
 		}
-		plan, err := p.Plan(m.Ctx(), opts)
+		plan, err := p.Plan(m.Ctx(), withPreset(opts, pid))
 		if err != nil {
 			t.Fatalf("%s: Plan: %v", id, err)
 		}
+		plan.PresetID = pid
 		if err := plan.Describe(); err != nil {
 			t.Fatalf("%s: Describe: %v", id, err)
 		}
@@ -131,10 +135,15 @@ func TestUndoRestoresEnv(t *testing.T) {
 		t.Fatalf("env.Read: %v", err)
 	}
 
-	plan, err := p.Plan(m.Ctx(), presetOpts(p, "huawei"))
+	opts, pid, err := resolvePreset(p, "huawei")
+	if err != nil {
+		t.Fatalf("resolvePreset: %v", err)
+	}
+	plan, err := p.Plan(m.Ctx(), withPreset(opts, pid))
 	if err != nil {
 		t.Fatalf("Plan: %v", err)
 	}
+	plan.PresetID = pid
 	if err := plan.Describe(); err != nil {
 		t.Fatalf("Describe: %v", err)
 	}

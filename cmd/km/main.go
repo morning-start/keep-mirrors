@@ -88,7 +88,7 @@ func loadRegistry() (*registry.Registry, []engine.PluginSource, error) {
 	return reg, diag, nil
 }
 
-// ? commands ?
+// ── commands ───────────────────────────────────────────────────────────
 
 func runTUI() error {
 	reg, diag, err := loadRegistry()
@@ -114,17 +114,25 @@ func cmdList(args []string) error {
 		fmt.Printf("%s\n", categoryName(cat))
 		for _, p := range reg.ByCategory()[cat] {
 			st := p.Status(m.Ctx())
-			badge := "○ 未安装"
-			if st.Installed {
-				badge = "○ 未配置"
-				if st.Current != "" {
-					badge = "● 已配置"
-				}
-			}
-			fmt.Printf("  %-16s %-8s %s\n", p.ID(), badge, short(st.Current, 60))
+			fmt.Printf("  %-16s %-8s %s\n", p.ID(), badge(st), short(st.Current, 60))
 		}
 	}
 	return nil
+}
+
+// badge renders the two independent facts a provider reports: whether its
+// toolchain is present, and whether a mirror is configured. They are not
+// exclusive — a configured pip whose interpreter is not on PATH is both — so
+// "configured" wins, since that is what the user is looking at.
+func badge(st provider.Status) string {
+	switch {
+	case st.Current != "":
+		return "● 已配置"
+	case st.Installed:
+		return "○ 未配置"
+	default:
+		return "○ 未安装"
+	}
 }
 
 func cmdPlan(args []string) error {
@@ -142,11 +150,15 @@ func cmdPlan(args []string) error {
 	}
 
 	m := app.New(reg)
-	opts := presetOpts(p, preset)
-	plan, err := p.Plan(m.Ctx(), opts)
+	opts, pid, err := resolvePreset(p, preset)
 	if err != nil {
 		return err
 	}
+	plan, err := p.Plan(m.Ctx(), withPreset(opts, pid))
+	if err != nil {
+		return err
+	}
+	plan.PresetID = pid
 	if err := plan.Describe(); err != nil {
 		return err
 	}
@@ -178,10 +190,15 @@ func cmdApply(args []string) error {
 	}
 
 	m := app.New(reg)
-	plan, err := p.Plan(m.Ctx(), presetOpts(p, preset))
+	opts, pid, err := resolvePreset(p, preset)
 	if err != nil {
 		return err
 	}
+	plan, err := p.Plan(m.Ctx(), withPreset(opts, pid))
+	if err != nil {
+		return err
+	}
+	plan.PresetID = pid
 	if err := plan.Describe(); err != nil {
 		return err
 	}
@@ -190,7 +207,7 @@ func cmdApply(args []string) error {
 		return nil
 	}
 
-	fmt.Printf("Applying %s/%s:\n\n", id, presetLabel(p, preset))
+	fmt.Printf("Applying %s/%s:\n\n", id, labelOfID(p, pid))
 	for _, c := range plan.Changes {
 		fmt.Println(core.Diff(c))
 	}
@@ -224,18 +241,7 @@ func cmdBench(args []string) error {
 		return registry.ErrNoProvider(id)
 	}
 
-	var urls []string
-	seen := map[string]bool{}
-	for _, pr := range p.Presets() {
-		for _, v := range pr.Opts {
-			s, ok := v.(string)
-			if !ok || !strings.HasPrefix(s, "http") || seen[s] {
-				continue
-			}
-			seen[s] = true
-			urls = append(urls, s)
-		}
-	}
+	urls := app.BenchURLs(p)
 	if len(urls) == 0 {
 		return fmt.Errorf("%s has no benchmarkable presets", id)
 	}
@@ -339,7 +345,7 @@ func cmdPlugin(args []string) error {
 	}
 }
 
-// ? helpers ?
+// ── helpers ────────────────────────────────────────────────────────────
 
 // reportBroken prints plugins that failed to load. Silent failure would make
 // a typo in a plugin invisible.
@@ -352,16 +358,25 @@ func reportBroken(diag []engine.PluginSource) {
 }
 
 // parseProvider extracts the provider id and flags from a command line.
+//
+// Both flag forms are accepted: "--preset=tuna" and "--preset tuna". The
+// space-separated form needs the next argument consumed as the value, which is
+// why this walks an index rather than ranging over args.
 func parseProvider(args []string) (id, preset string, yes bool, err error) {
 	var rest []string
-	for _, a := range args {
+	for i := 0; i < len(args); i++ {
+		a := args[i]
 		switch {
 		case a == "--yes" || a == "-y":
 			yes = true
 		case strings.HasPrefix(a, "--preset="):
 			preset = strings.TrimPrefix(a, "--preset=")
-		case strings.HasPrefix(a, "--preset"):
-			preset = strings.TrimPrefix(a, "--preset ")
+		case a == "--preset":
+			if i+1 >= len(args) {
+				return "", "", yes, fmt.Errorf("--preset requires a value")
+			}
+			i++
+			preset = args[i]
 		default:
 			rest = append(rest, a)
 		}
@@ -372,36 +387,65 @@ func parseProvider(args []string) (id, preset string, yes bool, err error) {
 	return rest[0], preset, yes, nil
 }
 
-// presetOpts returns the options for a preset, or the first preset's options
-// when none was named.
-func presetOpts(p provider.Provider, preset string) map[string]any {
+// resolvePreset returns the options and id of the preset to use. An empty
+// preset argument means "the first one", which is what the TUI preselects, so
+// the headless path and the interactive path agree on the default.
+//
+// An unknown preset id is an error rather than a silent fallback: applying the
+// default while the user believes their chosen preset is in effect would be
+// worse than refusing.
+func resolvePreset(p provider.Provider, preset string) (opts map[string]any, id string, err error) {
 	presets := p.Presets()
 	if len(presets) == 0 {
-		return map[string]any{}
-	}
-	if preset != "" {
-		if pr := provider.PresetByID(presets, preset); pr != nil {
-			return pr.Opts
+		if preset != "" {
+			return nil, "", fmt.Errorf("%s has no presets", p.ID())
 		}
-		return nil
+		return map[string]any{}, "", nil
 	}
-	return presets[0].Opts
+	if preset == "" {
+		return presets[0].Opts, presets[0].ID, nil
+	}
+	pr := provider.PresetByID(presets, preset)
+	if pr == nil {
+		return nil, "", fmt.Errorf("%s has no preset %q (available: %s)",
+			p.ID(), preset, presetIDs(p))
+	}
+	return pr.Opts, pr.ID, nil
 }
 
-// presetLabel returns the display label of a preset, or the first preset's
-// label when none was named.
-func presetLabel(p provider.Provider, preset string) string {
-	presets := p.Presets()
-	if len(presets) == 0 {
-		return "custom"
+// withPreset stamps the resolved preset id into the options. The plugin
+// ignores "_preset"; core records it in the backup manifest and the status bar
+// so an undo can say which preset it is rolling back.
+func withPreset(opts map[string]any, id string) map[string]any {
+	out := make(map[string]any, len(opts)+1)
+	for k, v := range opts {
+		out[k] = v
 	}
-	if preset != "" {
-		if pr := provider.PresetByID(presets, preset); pr != nil {
-			return pr.Label
-		}
-		return preset
+	if id != "" {
+		out["_preset"] = id
 	}
-	return presets[0].Label
+	return out
+}
+
+// presetIDs renders the available preset ids for an error message.
+func presetIDs(p provider.Provider) string {
+	if len(p.Presets()) == 0 {
+		return "none"
+	}
+	ids := make([]string, 0, len(p.Presets()))
+	for _, pr := range p.Presets() {
+		ids = append(ids, pr.ID)
+	}
+	return strings.Join(ids, ", ")
+}
+
+// labelOfID returns the display label of the preset with the given id, falling
+// back to the id itself when the plugin declared none.
+func labelOfID(p provider.Provider, id string) string {
+	if pr := provider.PresetByID(p.Presets(), id); pr != nil {
+		return pr.Label
+	}
+	return id
 }
 
 func categoryName(c provider.Category) string {
@@ -417,11 +461,17 @@ func categoryName(c provider.Category) string {
 	}
 }
 
+// short truncates s to at most n runes. It counts runes rather than bytes so a
+// Chinese label is not cut mid-character.
 func short(s string, n int) string {
-	if len(s) <= n {
+	r := []rune(s)
+	if len(r) <= n {
 		return s
 	}
-	return s[:n-1] + "…"
+	if n <= 1 {
+		return string(r[:n])
+	}
+	return string(r[:n-1]) + "…"
 }
 
 func backupID(b *core.Backup) string {
