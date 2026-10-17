@@ -87,6 +87,8 @@ Windows 环境下用 `pwsh`，路径用反斜杠。
 - `SeedIfEmpty` 的「目录非空就跳过」是刻意的：它同时保证同步进来的新版本
   不被回滚、用户删掉的插件不被复活。
 
+TUI 每秒轮询这两个目录并热重载，规则见 §3.6。
+
 ### 3.4 方案集顺序即默认值顺序
 
 `readPresets` **不能排序**。第一个预设是用户没动选择器时的默认值。曾经因为
@@ -96,6 +98,38 @@ Windows 环境下用 `pwsh`，路径用反斜杠。
 
 不要碰 `/etc`、系统级注册表、需要提权的位置。这是个用户态工具，任何
 "为了准确性需要 sudo" 的需求都应该是拒绝实现，而不是加提权流程。
+
+### 3.6 热重载的三条硬规则
+
+改 `internal/engine/reload.go` 或 `internal/tui/update.go` 前必须知道：
+
+**1. tick 处理器必须同时返回 poll 和下一次 tick。**
+
+```go
+return m, tea.Batch(
+    func() tea.Msg { return m.poll() },   // 这次轮询
+    tickCmd(PollInterval),                // 下一次定时
+)
+```
+
+只返回 poll，监听会在 1 秒后静默停止，症状是「改了不生效」，看起来像
+watcher 坏了而不是漏了一个返回值。`TestTickPollsAndRearms` 守这条。
+
+**2. 旧 provider 必须延迟一轮再 Close。**
+
+`State.Close` 和 `State.CallMethod` 共用同一把互斥锁。重载当轮就 Close 会让
+一个正在跑的 `plan()` 把它阻塞在锁上——而它跑在 UI 线程，界面会卡到调用超时
+（10 秒）。所以用 `Retire()` 入队，下一次 `Poll` 才真正释放。
+
+**3. 重载只能换指针，不能原地重载 `LState`。**
+
+重载产生新的 `LuaProvider`，旧的进 retired。`gopher-lua` 的 `LState` 不能在
+执行中途替换源码。
+
+**4. 全坏时不切换。**
+
+编辑出错（编辑器保存了半个文件）不该把插件全下掉：能编译的照常加载，坏的报
+在诊断里，调用方继续用上一份好的集合。一个插件的语法错误不该让界面变空。
 
 ---
 
@@ -229,6 +263,9 @@ go build ./... && go vet ./... && go test ./... && gofmt -l .
 | 任何 `internal/plugins/*.lua` | `go test ./internal/engine/ -run TestSeed` |
 | 沙箱 / `km.*` API | `go test ./internal/engine/ -run TestSandbox` |
 | `Loader` / 播种 / 目录优先级 | `go test ./internal/engine/ -run 'TestSeed\|TestList'` |
+| 热重载逻辑 | `go test ./internal/engine/ -run TestReload` |
+| tick 循环 / 重载 UI 契约 | `go test ./internal/tui/ ./internal/app/` |
+| 热重载端到端 | `go test ./cmd/km/ -run TestHotReload` |
 | `internal/core` / `internal/env` | `go test ./cmd/km/ ./internal/core/` |
 | `internal/app` 状态机 | `go test ./internal/app/`（用假 provider，不需要 Lua） |
 | `internal/tui` 渲染 | `go test ./internal/tui/`（用假 provider，不需要终端） |
@@ -259,6 +296,7 @@ go build ./... && go vet ./... && go test ./... && gofmt -l .
 - [ ] 改了种子插件，`TestSeedPluginsLoad` 仍然覆盖到它
 - [ ] 新增源在契约文档里登记了
 - [ ] 新插件填了 `version` / `author` / `license` / `description`
+- [ ] 动过 tick / 重载，`TestTickPollsAndRearms` 与 `TestReload*` 仍通过
 - [ ] 没有用 PowerShell 管道碰含中文的文件
 - [ ] 新代码没有给插件开放写文件能力
 - [ ] 手动 `km undo` 清掉了自己制造的测试配置

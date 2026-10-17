@@ -277,16 +277,58 @@ HOME/APPDATA/CARGO_HOME/GOENV 全指到临时目录；注册表则改为断言�
 
 | 功能 | 预留位置 | 还差什么 |
 |---|---|---|
-| 从插件库同步 | 插件已是磁盘文件，`Loader` 每次启动重读 | `km plugin sync`：比对远端 commit SHA，按该 SHA 拉取 tarball 后写入 `official/` |
-| 热重载 | 插件是普通文件，`Loader.Load()` 无状态 | 轮询 mtime → 重新 `Load` → **换 registry 指针**（不要原地重载 `LState`）→ 旧 provider 延迟 Close |
+| 从插件库同步 | 插件已是磁盘文件，热重载已就位 | `km plugin sync`：比对远端 commit SHA，按该 SHA 拉取 tarball 后写入 `official/` |
 | 无头 CI 模式 | `app.Model` 与 `tui` 已解耦 | 已可用：`km apply --preset=x --yes` |
 | 方案集一键切换 | `Model.Presets` 已按 provider 存 | 一个跨 provider 的 preset 组概念 |
 | 命名快照 | `core.Backup` 结构已可序列化 | 导出/导入格式与 `km snapshot` 子命令 |
 | 用户插件覆盖 | 已完成：`user/` 按 id 覆盖 `official/` | 无 |
 | 本地导入命令 | 目录扫描已就绪 | `km plugin import <path>`：校验元数据、检测 id 冲突、复制进 `user/` |
+| 热重载 | 已完成，见 §8.1 | 无 |
 
-顺序建议：**先热重载，后同步**。同步写完文件要靠热重载才生效，反过来做会
-每次验证都要求重启。
+### 8.1 热重载（已完成）
+
+TUI 每秒轮询一次插件目录，发现变化就重新编译并换掉整个 provider 集合。
+
+```
+tick (1s)
+  └─ tea.Cmd goroutine: Reloader.Poll()
+       ├─ 扫描 official/ 与 user/，取每个文件 (mtime, size)
+       ├─ 与上次快照比对，相同则什么都不做
+       └─ 不同则 Load() 全套 → 打包成 ReloadedMsg
+  └─ UI 线程: Model.ApplyReload(msg)
+       └─ Registry.Replace(新集合) → 保留用户的预设选择 → 重建 plan
+```
+
+几个刻意的选择，每一条都有对应的测试：
+
+**轮询而不是 fsnotify。** 被监听的是几个小文本文件，由人手编辑，1 秒延迟
+感知不到。而 OS watcher 要处理事件合并、重命名语义和后台 goroutine 的生命
+周期，每个平台各有各的坑。若延迟将来真的碍事，换掉 `Poll` 的内部实现不会
+影响这个类型的其余部分。
+
+**换指针而不是原地重载。** `gopher-lua` 的 `LState` 不能安全地在执行中途
+替换源码。所以重载产生**新的** `LuaProvider`，旧的那个进 retired 队列。
+
+**旧 provider 延迟一轮再关。** `State.Close` 和 `State.CallMethod` 用同一把
+互斥锁。若在重载当轮就 Close，一个正在跑 `plan()` 或 `benchmark()` 的调用
+会让 Close 阻塞在锁上——而它跑在 UI 线程，界面会卡到调用超时（10 秒）。所以
+retired 集合在**下一次**轮询时才关闭。
+
+**全坏时不切换。** 编辑出错（编辑器保存了半个文件）不会把插件全下掉：能编译
+的照常加载，坏的报在诊断里，调用方继续用上一份好的集合。一个插件的语法错误
+不该让整个界面变空。
+
+**mtime + size 而不是哈希。** 每秒读一遍全部插件内容太浪费；两个编辑落在同一
+mtime 刻度且大小相同很罕见，真发生了下一次编辑也会补上。
+
+**被遮蔽的 official 文件不参与比对。** user 按 id 覆盖 official，所以改一个
+已经生效的 official 副本不会产生可观测效果，不该报成变化。
+
+**用户的预设选择跨重载保留。** 重载改的是插件行为，不是用户的选择；重置选择
+等于悄悄撤销一次操作。游标也按 provider id 重新锚定，因为标题变了会让排序
+变化，索引会指到别的源上。
+
+下一步是插件库同步。热重载已就位，同步写完文件后不需要重启，验证链路完整。
 
 ---
 
@@ -298,5 +340,8 @@ HOME/APPDATA/CARGO_HOME/GOENV 全指到临时目录；注册表则改为断言�
 | 契约 | 种子里每个插件都能 load、能 `status()`、能 `plan()`，且 default preset 计划非空 | `internal/engine/plugins_test.go` |
 | 往返 | apply 后 `status()` 必须反映改动（防 §6.1） | `cmd/km/e2e_test.go` |
 | 撤销 | apply 改变的值，undo 必须恢复到 apply 前；备份经 manifest 往返后仍带环境变量原值 | `cmd/km/e2e_test.go` |
+| 热重载 | 首轮不算变化、未改不重载、改/增/删都能发现、坏插件不拖垮其余、全坏时拒绝切换、遮蔽文件不误报、旧 VM 延迟关闭 | `internal/engine/reload_test.go` |
+| 重载 UI 契约 | 预设选择与游标跨重载保留、无变化时状态栏安静、坏插件被报告 | `internal/app/model_test.go` |
+| 轮询循环 | tick 必须重新排定下一次（否则监听一秒后静默停止） | `internal/tui/update_test.go` |
 
 测试全部跑在 `sandbox()` 造的临时 home 里，不碰开发者真实 dotfile。
