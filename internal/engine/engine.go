@@ -171,17 +171,6 @@ func (s *State) Close() {
 // DoString runs source in the sandbox under the default timeout.
 func (s *State) DoString(src string) error { return s.LoadChunk(src) }
 
-// DoFile loads and runs a file. It is used only for built-in plugins shipped
-// with the binary; user-supplied files go through LoadChunk so we control
-// the source.
-func (s *State) DoFile(path string) error {
-	src, err := readFileLimited(path)
-	if err != nil {
-		return err
-	}
-	return s.DoString(src)
-}
-
 // CallMethod invokes a function stored in a Lua table (the plugin module)
 // with args and returns its results.
 //
@@ -262,19 +251,6 @@ func (s *State) Global(name string) lua.LValue {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.L.GetGlobal(name)
-}
-
-// readFileLimited reads at most MaxSourceBytes from path.
-func readFileLimited(path string) (string, error) {
-	const MaxSourceBytes = 1 << 20 // 1 MiB is generous for a plugin
-	f, err := openRead(path)
-	if err != nil {
-		return "", err
-	}
-	defer f.Close()
-	buf := make([]byte, MaxSourceBytes)
-	n, _ := f.Read(buf)
-	return string(buf[:n]), nil
 }
 
 // platform returns the runtime platform name, exposed to plugins.

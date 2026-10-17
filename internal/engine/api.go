@@ -291,7 +291,7 @@ func execAllowed(opts Options, cmd string) bool {
 
 // runCmd runs argv with a timeout and returns trimmed stdout and stderr.
 func runCmd(argv []string, timeout time.Duration) (string, string) {
-	ctx, cancel := contextWithTimeout(timeout)
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
@@ -307,6 +307,10 @@ func runCmd(argv []string, timeout time.Duration) (string, string) {
 	}
 	return strings.TrimSpace(out.String()), strings.TrimSpace(errb.String())
 }
+
+// pluginLog is where km.log writes. It defaults to stderr so a misbehaving
+// plugin is visible during development.
+var pluginLog io.Writer = os.Stderr
 
 // logf writes to the plugin log sink.
 func logf(format string, args ...any) {

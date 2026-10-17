@@ -164,12 +164,3 @@ func (l *Loader) readSource(src PluginSource) (string, error) {
 	}
 	return string(b), nil
 }
-
-// EnsureUserPluginDir creates the user plugin directory.
-func (l *Loader) EnsureUserPluginDir() (string, error) {
-	d := l.UserPluginDir()
-	if err := os.MkdirAll(d, 0o755); err != nil {
-		return "", fmt.Errorf("create %s: %w", d, err)
-	}
-	return d, nil
-}
