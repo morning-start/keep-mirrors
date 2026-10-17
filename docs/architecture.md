@@ -336,12 +336,16 @@ mtime 刻度且大小相同很罕见，真发生了下一次编辑也会补上�
 ```
 km plugin sync
   ├─ git ls-remote https://github.com/{repo}.git plugins   → commit SHA
-  ├─ 与 plugins-sync.json 里的 SHA 比对，相同则退出
+  ├─ 与本地记录的 SHA 比对，相同则退出
   ├─ 按该 SHA 逐个下载 internal/plugins/*.lua（raw URL，SHA 固定）
   ├─ 每个文件编译并调 status()/plan() 校验契约
   ├─ 全部通过才落盘（fsutil 原子写）
   └─ 热重载自动捡起
 ```
+
+「本地记录的 SHA」有两级：`plugins-sync.json`（上次同步）优先，没有这个文件时
+回落到二进制内嵌的 `PROVENANCE`。所以刚装好、从没同步过的机器也能正确回答
+「已是最新」，而不是把二进制自带的插件再下一遍。
 
 **为什么不用 GitHub REST API。** `/repos/{o}/{r}/branches` 走匿名配额，
 60 次/小时，一次后台同步就可能耗尽——实测配额归零后只剩 403。而
@@ -365,6 +369,38 @@ km plugin sync
 前置条件。这也正是打 tag 时要把插件同步回 master 的原因：否则新装用户拿到
 的是发布时的旧插件。
 
+### 8.3 种子也要知道自己的来源（PROVENANCE）
+
+只有「同步过的机器知道版本」不够：刚装好的机器没有 `plugins-sync.json`，
+它无法回答「我这份二进制带的是哪一版插件」。后果有两个——首次同步必然把
+二进制自带的四个文件重新下一遍；以及报 bug 时说不清插件版本。
+
+所以种子目录里多一个 `PROVENANCE`：
+
+```
+internal/plugins/
+├── pip.lua  npm.lua  cargo.lua  go.lua
+└── PROVENANCE        # sha=... / source=... / branch=...
+```
+
+用文件而不是 `-ldflags -X` 注入，是因为 `go install` 和 `go build` 不会传
+构建参数，漏传一次就静默变成「未标记」，而这种错误没有任何提示。
+
+三个设计点：
+
+**`//go:embed *.lua PROVENANCE`**，而不是只 embed `*.lua`。遍历种子时必须
+继续按 `.lua` 过滤，否则 `PROVENANCE` 会被当成插件喂给 Lua VM。
+
+**解析器宽容 BOM。** PowerShell 5 的 `Set-Content -Encoding utf8` 必然写入
+BOM，于是第一行变成 `\ufeffsha=`，key 匹配不上，整个文件看起来是空的——
+而这种现象从表面完全看不出来。`scripts/stamp-plugins.ps1` 已经改用
+`UTF8Encoding($false)` 不再写 BOM，解析器仍然 `TrimPrefix("\ufeff")` 兜底。
+
+**脚本会拒绝不一致的快照。** `stamp-plugins.ps1` 在写文件前逐个比对本地
+`.lua` 与目标 SHA 的 blob 哈希，不一致就退出并提示先
+`git checkout plugins -- internal/plugins/`。否则记下来的 SHA 是在说谎：
+要么谎称更新（掩盖待同步的更新），要么谎称更旧（逼用户白下一遍）。
+
 ---
 
 ## 9. 测试策略
@@ -377,6 +413,7 @@ km plugin sync
 | 撤销 | apply 改变的值，undo 必须恢复到 apply 前；备份经 manifest 往返后仍带环境变量原值 | `cmd/km/e2e_test.go` |
 | 热重载 | 首轮不算变化、未改不重载、改/增/删都能发现、坏插件不拖垮其余、全坏时拒绝切换、遮蔽文件不误报、旧 VM 延迟关闭 | `internal/engine/reload_test.go` |
 | 插件同步 | SHA 未变不下载、不兼容契约被拒、坏 Lua 被拒、id 不匹配被拒、缺源被拒、全量校验后才落盘、dry-run 不写盘 | `internal/syncs/sync_test.go` |
+| 种子身份 | `PROVENANCE` 必须有可用 SHA；格式必须是 40 位小写 hex；不得被当成插件文件；解析器容忍 BOM / CRLF / 引号 / 注释 | `internal/plugins/embed_test.go` |
 | 重载 UI 契约 | 预设选择与游标跨重载保留、无变化时状态栏安静、坏插件被报告 | `internal/app/model_test.go` |
 | 轮询循环 | tick 必须重新排定下一次（否则监听一秒后静默停止） | `internal/tui/update_test.go` |
 

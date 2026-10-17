@@ -44,6 +44,10 @@ go build -o km.exe ./cmd/km                       # 产出可执行
 .\km.exe plugin sync --dry-run                    # 远端有没有新插件（不写盘）
 .\km.exe plugin sync                              # 拉 plugins 分支的最新插件
 
+# 打 tag 前：把 plugins 分支的插件同步进种子，并记下它来自哪个提交
+git checkout plugins -- internal/plugins/
+pwsh -File scripts/stamp-plugins.ps1
+
 # 改了 internal/plugins/*.lua 只影响新安装；要验证当前机器，
 # 直接改 %APPDATA%\keep-mirrors\plugins\official\ 下的文件（不用重编译），
 # 或者复制到 user\ 再改（不会被同步覆盖）。
@@ -177,9 +181,18 @@ git push origin plugins
 # 打 tag 前，把插件同步回 master（否则种子是旧的，新装用户开箱即用拿到旧版）
 git checkout master
 git checkout plugins -- internal/plugins/
+
+# 记下这份种子来自哪个提交。不 stamp 的话，首次同步会白下一遍插件，
+# 而且 km plugin list 无法回答"这个二进制带的是哪一版"。
+pwsh -File scripts/stamp-plugins.ps1
+
 git commit -m "release: sync plugins from plugins branch"
 git tag v1.2.0 && git push origin master --tags
 ```
+
+`stamp-plugins.ps1` 会先逐个比对本地 `.lua` 与 plugins 分支的 blob 哈希，
+不一致就退出。所以忘了 `git checkout plugins -- internal/plugins/` 会被它拦住，
+不会把错的 SHA 记进去。
 
 ---
 
@@ -317,6 +330,7 @@ go build ./... && go vet ./... && go test ./... && gofmt -l .
 | tick 循环 / 重载 UI 契约 | `go test ./internal/tui/ ./internal/app/` |
 | 热重载端到端 | `go test ./cmd/km/ -run TestHotReload` |
 | 插件同步 | `go test ./internal/syncs/` |
+| 种子身份 / PROVENANCE | `go test ./internal/plugins/` |
 | `internal/core` / `internal/env` | `go test ./cmd/km/ ./internal/core/` |
 | `internal/app` 状态机 | `go test ./internal/app/`（用假 provider，不需要 Lua） |
 | `internal/tui` 渲染 | `go test ./internal/tui/`（用假 provider，不需要终端） |
@@ -349,6 +363,7 @@ go build ./... && go vet ./... && go test ./... && gofmt -l .
 - [ ] 新插件填了 `version` / `author` / `license` / `description`
 - [ ] 动过 tick / 重载，`TestTickPollsAndRearms` 与 `TestReload*` 仍通过
 - [ ] 动过同步，`TestSync*` 仍通过（尤其「不兼容契约必须被拒绝」）
+- [ ] 动过 `PROVENANCE` 或种子，`TestProvenance*` 仍通过
 - [ ] 没有用 PowerShell 管道碰含中文的文件
 - [ ] 新代码没有给插件开放写文件能力
 - [ ] 手动 `km undo` 清掉了自己制造的测试配置
