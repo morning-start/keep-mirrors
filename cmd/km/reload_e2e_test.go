@@ -30,6 +30,7 @@ func TestHotReloadSeesDiskEdit(t *testing.T) {
 	}
 
 	r := engine.NewReloader(loader)
+	r.Adopt(provs)
 	if err := r.Snapshot(); err != nil {
 		t.Fatalf("Snapshot: %v", err)
 	}
@@ -78,11 +79,9 @@ func TestHotReloadSeesDiskEdit(t *testing.T) {
 		t.Fatal("pip disappeared after the reload")
 	}
 
-	// The retired set (the ones loaded before the edit) must not be closed
-	// until the next poll, so a call in flight can finish.
-	r.Retire(reloaded)
+	// The set that was live before the edit is closed by the reloader on the
+	// following poll, not at replacement time, so a call in flight can finish.
 	r.Close()
-	_ = provs
 }
 
 // TestHotReloadUserDirOverride checks that dropping a plugin into user/ is
@@ -127,7 +126,6 @@ func TestHotReloadUserDirOverride(t *testing.T) {
 			t.Errorf("pip title = %q, want the user override to win", p.Title())
 		}
 	}
-	r.Retire(reloaded)
 }
 
 // TestSeededPluginsAreRealFiles checks that the runtime source really is on

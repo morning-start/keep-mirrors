@@ -26,6 +26,14 @@ type fileStamp struct {
 // Reloader watches the plugin directories and rebuilds the provider set when
 // they change.
 //
+// It owns the lifetime of the provider sets. That is deliberate: an earlier
+// version had the caller pass the replaced set to Retire(), and the caller
+// retired the set Poll had just *returned* instead of the one going out of use.
+// Nothing failed at the call site — the providers stayed fine until the next
+// poll, which closed the set the UI was displaying. Owning the lifetime here
+// means the only public operation is "give me the new set", and there is no
+// slice for the caller to get wrong.
+//
 // Polling rather than fsnotify is a deliberate choice. The thing being watched
 // is a handful of small text files that a human edits, so a one second delay
 // is invisible, while an OS watcher brings event coalescing, rename semantics
@@ -39,17 +47,28 @@ type Reloader struct {
 	stamps map[string]fileStamp
 	// started guards the first poll, which must not be reported as a change.
 	started bool
-	// retired holds providers replaced by a reload. They are closed on the
-	// next poll rather than immediately: a benchmark or plan call may still
-	// be in flight on the old VM, and State.Close takes the same mutex as
-	// CallMethod, so closing here would stall the UI thread until that call
-	// finishes (or times out, ten seconds later).
+
+	// live is the set the caller currently has installed.
+	live []*LuaProvider
+	// retired holds sets replaced by a reload. They are closed on the next
+	// poll rather than immediately: a benchmark or plan call may still be in
+	// flight on the old VM, and State.Close takes the same mutex as
+	// CallMethod, so closing at replacement time would stall the UI thread
+	// until that call finishes (or times out, ten seconds later).
 	retired []*LuaProvider
 }
 
 // NewReloader returns a reloader over the same directories the loader reads.
 func NewReloader(l *Loader) *Reloader {
 	return &Reloader{loader: l}
+}
+
+// Adopt records the set the caller loaded at startup as the live one.
+//
+// Without this the first reload would have nothing to retire, and the set
+// loaded at startup — the one the first Poll replaces — would never be closed.
+func (r *Reloader) Adopt(ps []*LuaProvider) {
+	r.live = append(r.live[:0], ps...)
 }
 
 // Snapshot records the current state of the plugin files without loading them.
@@ -68,14 +87,16 @@ func (r *Reloader) Snapshot() error {
 // Poll compares the plugin files against the last snapshot.
 //
 // When nothing changed it returns changed=false and the caller keeps its
-// current providers. When something changed it returns the freshly loaded set;
-// the caller is responsible for swapping it in.
+// current providers. When something changed it returns the freshly loaded set
+// and hands the previously live set over to the retirement queue; the caller
+// only has to swap the new set in.
 //
 // A plugin that fails to compile after an edit does not abort the reload: the
 // broken plugin is reported in diag and the rest still load, so an editor's
 // half-saved file does not take the whole list down. When *every* plugin fails
-// and nothing was loaded, that is treated as "no usable change" and the caller
-// is told changed=false so it keeps the last good set.
+// and nothing was loaded, that is treated as "no usable change", the live set is
+// left alone, and the caller is told changed=false so it keeps working with what
+// it has.
 func (r *Reloader) Poll() (provs []*LuaProvider, diag []PluginSource, changed bool, err error) {
 	stamps, err := r.scan()
 	if err != nil {
@@ -118,16 +139,16 @@ func (r *Reloader) Poll() (provs []*LuaProvider, diag []PluginSource, changed bo
 	}
 
 	r.closeRetired()
+
+	// The outgoing set becomes retired and the freshly loaded one becomes
+	// live. Rotation lives here rather than at the call site so "which set is
+	// going out of use" is never a caller's judgement call.
+	r.retired = r.live
+	r.live = loaded
 	return loaded, diag, true, nil
 }
 
-// Retire marks the current providers as replaceable. They are closed on the
-// next poll, by which time any call that was using them has returned.
-func (r *Reloader) Retire(old []*LuaProvider) {
-	r.retired = append(r.retired, old...)
-}
-
-// closeRetired releases the VMs that were replaced on a previous poll.
+// closeRetired releases the sets that were replaced on a previous reload.
 func (r *Reloader) closeRetired() {
 	for _, p := range r.retired {
 		p.Close()
@@ -135,9 +156,14 @@ func (r *Reloader) closeRetired() {
 	r.retired = nil
 }
 
-// Close releases everything still held. The TUI calls it when the program exits.
+// Close releases everything the reloader still holds. The TUI calls it when the
+// program exits, at which point the live set has no more callers.
 func (r *Reloader) Close() {
 	r.closeRetired()
+	for _, p := range r.live {
+		p.Close()
+	}
+	r.live = nil
 }
 
 // scan collects a stamp for every .lua file the loader would read.

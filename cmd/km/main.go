@@ -133,6 +133,9 @@ func runTUI() error {
 	}
 
 	reloader := engine.NewReloader(loader)
+	// Hand the startup set to the reloader before watching: it is the set the
+	// first reload replaces, and only the reloader can close it later.
+	reloader.Adopt(provs)
 	if err := reloader.Snapshot(); err != nil {
 		// A failed baseline only risks one spurious reload at the first tick;
 		// not worth refusing to start over.
@@ -150,6 +153,11 @@ func runTUI() error {
 // It runs inside a tea.Cmd goroutine, so it must not touch the model. It polls
 // the directory and packages the outcome into a message; the model is updated
 // on the UI goroutine when that message is handled.
+//
+// The reloader owns the old provider set's lifetime: it retires the set going
+// out of use and closes it on the following poll, by which time any call still
+// using it has returned. Closing it here instead would block the UI thread on
+// the state mutex for up to the call timeout.
 func pollPlugins(r *engine.Reloader) tui.PollFunc {
 	return func() app.ReloadedMsg {
 		provs, diag, changed, err := r.Poll()
@@ -170,11 +178,6 @@ func pollPlugins(r *engine.Reloader) tui.PollFunc {
 			out = append(out, p)
 		}
 		msg.Providers = out
-
-		// Replaced VMs are closed on the next poll, by which time any call
-		// still using one has returned. Closing here would block the UI thread
-		// on the state mutex for up to the call timeout.
-		r.Retire(provs)
 		return msg
 	}
 }

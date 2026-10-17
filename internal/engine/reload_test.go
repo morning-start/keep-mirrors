@@ -115,7 +115,7 @@ func TestReloadPicksUpEditedFile(t *testing.T) {
 	if got := provs[0].Title(); got != "Pip RENAMED" {
 		t.Errorf("title = %q, want the edited value", got)
 	}
-	t.Cleanup(func() { r.Retire(provs); r.Close() })
+	t.Cleanup(r.Close)
 }
 
 // TestReloadPicksUpNewAndDeletedFile covers added and removed plugins, which
@@ -138,8 +138,8 @@ func TestReloadPicksUpNewAndDeletedFile(t *testing.T) {
 	if !changed || len(provs) != 2 {
 		t.Fatalf("added plugin: changed=%v n=%d, want true/2", changed, len(provs))
 	}
-	r.Retire(provs)
-	// Force the deferred close so the removed file is not holding a VM.
+	// Force the deferred close so the loaded set is released before the next
+	// poll replaces it.
 	r.Close()
 
 	// Removed.
@@ -153,7 +153,6 @@ func TestReloadPicksUpNewAndDeletedFile(t *testing.T) {
 	if !changed || len(provs) != 1 {
 		t.Fatalf("removed plugin: changed=%v n=%d, want true/1", changed, len(provs))
 	}
-	r.Retire(provs)
 	r.Close()
 }
 
@@ -192,7 +191,6 @@ func TestReloadBrokenPluginKeepsOthers(t *testing.T) {
 	if !found {
 		t.Errorf("the broken plugin was not reported: %+v", diag)
 	}
-	r.Retire(provs)
 	r.Close()
 }
 
@@ -261,7 +259,6 @@ func TestReloadUserOverridesOfficial(t *testing.T) {
 	if len(provs) != 1 || provs[0].Title() != "User EDITED" {
 		t.Errorf("reload did not pick up the user override")
 	}
-	r.Retire(provs)
 	r.Close()
 }
 
@@ -285,8 +282,9 @@ func TestReloadMissingDirsIsNotAnError(t *testing.T) {
 	r.Close()
 }
 
-// TestReloadRetiresOldProvidersLazily documents the lifetime rule: Retire does
-// not close immediately, because a call may still be running on the old VM.
+// TestReloadRetiresOldProvidersLazily documents the lifetime rule: the set
+// going out of use is not closed at replacement time, because a call may still
+// be running on its VMs.
 func TestReloadRetiresOldProvidersLazily(t *testing.T) {
 	l, official := reloadFixture(t)
 	writePlugin(t, official, "pip.lua", pluginSrc("pip", "Pip"))
@@ -296,17 +294,22 @@ func TestReloadRetiresOldProvidersLazily(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// The set loaded at startup is what the first reload replaces.
+	startup, _, err := l.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.Adopt(startup)
+
 	writePlugin(t, official, "pip.lua", pluginSrc("pip", "Pip2"))
 	first, _, changed, err := r.Poll()
 	if err != nil || !changed {
 		t.Fatalf("first poll: changed=%v err=%v", changed, err)
 	}
 
-	r.Retire(first)
-
-	// The retired provider must still work: a call in flight would use it.
-	if _, err := first[0].Plan(testCtx(), map[string]any{}); err != nil {
-		t.Fatalf("retired provider was closed too early: %v", err)
+	// The replaced set must still work: a call in flight would use it.
+	if _, err := startup[0].Plan(testCtx(), map[string]any{}); err != nil {
+		t.Fatalf("replaced provider was closed too early: %v", err)
 	}
 
 	// The next poll closes it.
@@ -315,18 +318,97 @@ func TestReloadRetiresOldProvidersLazily(t *testing.T) {
 	if err != nil || !changed {
 		t.Fatalf("second poll: changed=%v err=%v", changed, err)
 	}
-	// After that poll, the first set must be closed: status() surfaces the
+	// After that poll, the startup set must be closed: status() surfaces the
 	// closed state instead of panicking.
-	if st := first[0].Status(testCtx()); !strings.Contains(st.Note, "closed") {
-		t.Errorf("retired provider note = %q, want it to be closed by the next poll", st.Note)
+	if st := startup[0].Status(testCtx()); !strings.Contains(st.Note, "closed") {
+		t.Errorf("replaced provider note = %q, want it to be closed by the next poll", st.Note)
 	}
-	r.Retire(second)
+
+	// The set installed by the *second* poll (the live one) must survive that
+	// close, and so must the one before it: only the replaced set is released.
+	if st := second[0].Status(testCtx()); strings.Contains(st.Note, "closed") {
+		t.Errorf("the live set was closed by the poll that replaced the previous one: %q", st.Note)
+	}
+	if st := first[0].Status(testCtx()); strings.Contains(st.Note, "closed") {
+		t.Errorf("the set installed one poll ago was closed early: %q", st.Note)
+	}
 	r.Close()
 }
 
-// TestReloadStatusAfterRetireIsSafe checks that calling into a closed provider
+// TestReloadLiveSetSurvivesIdlePoll is the regression test for a bug that made
+// every reload expire one second later.
+//
+// The caller used to retire the slice Poll had just returned, which is the
+// *incoming* set, so the next idle poll closed the providers the UI was
+// displaying. The symptom looked like the watcher working — the title changed
+// on reload — followed by every provider failing one tick later, which is easy
+// to misread as a plugin error rather than a lifetime bug.
+func TestReloadLiveSetSurvivesIdlePoll(t *testing.T) {
+	l, official := reloadFixture(t)
+	writePlugin(t, official, "pip.lua", pluginSrc("pip", "Pip"))
+
+	r := engine.NewReloader(l)
+	if err := r.Snapshot(); err != nil {
+		t.Fatal(err)
+	}
+	startup, _, err := l.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.Adopt(startup)
+
+	writePlugin(t, official, "pip.lua", pluginSrc("pip", "Pip2"))
+	live, _, changed, err := r.Poll()
+	if err != nil || !changed {
+		t.Fatalf("poll: changed=%v err=%v", changed, err)
+	}
+
+	// Nothing changes on disk, so the next poll has no work. It must not close
+	// the set it is displaying.
+	for i := 0; i < 3; i++ {
+		if _, _, changed, err := r.Poll(); err != nil {
+			t.Fatalf("idle poll %d: %v", i, err)
+		} else if changed {
+			t.Fatalf("idle poll %d reported a spurious change", i)
+		}
+		if st := live[0].Status(testCtx()); strings.Contains(st.Note, "closed") {
+			t.Fatalf("idle poll %d closed the live provider set: %q", i, st.Note)
+		}
+	}
+
+	// The replacement set is still closed on schedule.
+	if st := startup[0].Status(testCtx()); !strings.Contains(st.Note, "closed") {
+		t.Errorf("the replaced set was never closed: %q", st.Note)
+	}
+	r.Close()
+}
+
+// TestReloadAdoptIsWhatCloseReleases checks the startup wiring: a set handed to
+// Adopt must be released by Close, or a long-running TUI leaks one VM per file
+// it never re-loads.
+func TestReloadAdoptIsWhatCloseReleases(t *testing.T) {
+	l, official := reloadFixture(t)
+	writePlugin(t, official, "pip.lua", pluginSrc("pip", "Pip"))
+
+	r := engine.NewReloader(l)
+	if err := r.Snapshot(); err != nil {
+		t.Fatal(err)
+	}
+	startup, _, err := l.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.Adopt(startup)
+	r.Close()
+
+	if st := startup[0].Status(testCtx()); !strings.Contains(st.Note, "closed") {
+		t.Errorf("Close did not release the adopted set: %q", st.Note)
+	}
+}
+
+// TestReloadStatusAfterCloseIsSafe checks that calling into a closed provider
 // fails cleanly rather than panicking, which is what a late benchmark would do.
-func TestReloadStatusAfterRetireIsSafe(t *testing.T) {
+func TestReloadStatusAfterCloseIsSafe(t *testing.T) {
 	l, official := reloadFixture(t)
 	writePlugin(t, official, "pip.lua", pluginSrc("pip", "Pip"))
 
@@ -340,8 +422,7 @@ func TestReloadStatusAfterRetireIsSafe(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	r.Retire(first)
-	r.Close() // closes the retired set
+	r.Close() // closes the live set
 
 	// A closed provider must not panic: status() maps the error into Note.
 	st := first[0].Status(testCtx())
