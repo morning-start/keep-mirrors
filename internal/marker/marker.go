@@ -157,13 +157,3 @@ func Present(content string, b Block) bool {
 	got := strings.Join(lines[start+1:end-1], "\n")
 	return strings.TrimRight(got, "\n") == strings.TrimRight(b.Body, "\n")
 }
-
-// Body returns the current managed body, or "" when the block is absent.
-func Body(content, name string, f Format) string {
-	start, end, ok := Find(content, name, f)
-	if !ok {
-		return ""
-	}
-	lines := strings.Split(content, "\n")
-	return strings.Join(lines[start+1:end-1], "\n")
-}

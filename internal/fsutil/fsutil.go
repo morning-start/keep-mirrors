@@ -22,12 +22,6 @@ func Exists(p string) bool {
 	return err == nil
 }
 
-// IsDir reports whether p is a directory.
-func IsDir(p string) bool {
-	fi, err := os.Stat(p)
-	return err == nil && fi.IsDir()
-}
-
 // Read returns the file content as a string. A missing file yields "" and a
 // nil error, which keeps the callers free of "does it exist yet" noise.
 func Read(p string) (string, error) {
@@ -39,12 +33,6 @@ func Read(p string) (string, error) {
 		return "", err
 	}
 	return string(b), nil
-}
-
-// MustRead is Read with the error dropped; it is only for diagnostics.
-func MustRead(p string) string {
-	s, _ := Read(p)
-	return s
 }
 
 // ModeOf returns the file mode of p, or 0o644 when p does not exist.

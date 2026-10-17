@@ -12,7 +12,6 @@
 package config
 
 import (
-	"fmt"
 	"strconv"
 	"strings"
 )
@@ -193,24 +192,4 @@ func Get(entries []Entry, section, key string) string {
 		}
 	}
 	return ""
-}
-
-// GetAny returns the first value whose key matches in any section, which is
-// what providers want when they do not care where the setting lives.
-func GetAny(entries []Entry, key string) string {
-	for _, e := range entries {
-		if e.Key == key {
-			return e.Value
-		}
-	}
-	return ""
-}
-
-// String renders entries as a one-line debug summary.
-func String(entries []Entry) string {
-	parts := make([]string, 0, len(entries))
-	for _, e := range entries {
-		parts = append(parts, fmt.Sprintf("%s.%s=%q", e.Section, e.Key, e.Value))
-	}
-	return strings.Join(parts, " ")
 }

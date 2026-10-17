@@ -9,7 +9,6 @@ package paths
 import (
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 )
 
@@ -85,10 +84,6 @@ func Expand(p string) string {
 	return filepath.Join(home, p)
 }
 
-// Contract resolves the leading "~" but leaves the path relative-friendly form
-// used by providers when they describe themselves.
-func Contract(p string) string { return Expand(p) }
-
 // WithinHome reports whether p (after expansion) stays inside the home
 // directory. It is the containment check used by the future sandbox and by
 // the TUI's safety warnings today.
@@ -104,9 +99,6 @@ func WithinHome(p string) bool {
 	return true
 }
 
-// IsWindows is a small readability helper for provider code.
-func IsWindows() bool { return runtime.GOOS == "windows" }
-
 // EnvOr returns os.Getenv(k) or def when unset.
 func EnvOr(k, def string) string {
 	if v := os.Getenv(k); v != "" {
@@ -114,7 +106,3 @@ func EnvOr(k, def string) string {
 	}
 	return def
 }
-
-// EnvOrEmpty is like EnvOr but returns "" for unset and keeps the raw value
-// otherwise, so callers can distinguish "unset" from "set to empty".
-func EnvOrEmpty(k string) string { return os.Getenv(k) }
