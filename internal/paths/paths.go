@@ -59,6 +59,22 @@ func BackupDir() string { return filepath.Join(AppDir(), "backups") }
 // LogDir holds rotating logs.
 func LogDir() string { return filepath.Join(AppDir(), "logs") }
 
+// PluginRoot is the directory holding every plugin source km runs.
+func PluginRoot() string { return filepath.Join(AppDir(), "plugins") }
+
+// OfficialPluginDir holds the plugins curated by the project. km may rewrite
+// this directory wholesale when it syncs from the registry, which is why user
+// edits belong in UserPluginDir instead of here.
+func OfficialPluginDir() string { return filepath.Join(PluginRoot(), "official") }
+
+// UserPluginDir holds plugins the user brought themselves. km never writes
+// here: it is the one place a local edit is guaranteed to survive a sync.
+//
+// The name is "user" rather than "local" on purpose. What distinguishes these
+// plugins is who owns them, not where they came from, so a plugin fetched from
+// a user-supplied URL later still belongs here.
+func UserPluginDir() string { return filepath.Join(PluginRoot(), "user") }
+
 // Expand replaces a leading "~" with the user's home directory and cleans the
 // result. Relative paths are resolved against Home.
 //
