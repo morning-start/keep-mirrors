@@ -13,13 +13,14 @@ import (
 	"runtime"
 	"sort"
 	"strings"
-	"time"
 
-	"keep-mirrors/internal/config"
 	"keep-mirrors/internal/core"
 	"keep-mirrors/internal/env"
+	"keep-mirrors/internal/paths"
 	"keep-mirrors/internal/provider"
 	"keep-mirrors/internal/registry"
+
+	tea "github.com/charmbracelet/bubbletea"
 )
 
 // Model is the whole application state.
@@ -77,17 +78,10 @@ func New(reg *registry.Registry) *Model {
 func (m *Model) Ctx() provider.Context {
 	return provider.Context{
 		Platform: runtime.GOOS,
-		Home:     homeDir(),
+		Home:     paths.Home(),
 		Shell:    string(env.DetectShell()),
 		Values:   map[string]any{},
 	}
-}
-
-func homeDir() string {
-	if h, err := userHomeDir(); err == nil {
-		return h
-	}
-	return ""
 }
 
 // Selected returns the provider under the cursor.
@@ -155,6 +149,35 @@ func (m *Model) Move(delta int) {
 	}
 }
 
+// MoveTo moves the cursor to an absolute index, clamped to the visible list.
+// It exists so "bottom" lands on the last *visible* row when a filter is
+// active; using len(Providers)-1 would point past the end of the filtered list.
+func (m *Model) MoveTo(i int) {
+	n := len(m.visible())
+	if n == 0 {
+		m.Cursor = 0
+		return
+	}
+	if i < 0 {
+		i = 0
+	}
+	if i >= n {
+		i = n - 1
+	}
+	m.Cursor = i
+}
+
+// Count returns the number of visible providers.
+func (m *Model) Count() int { return len(m.visible()) }
+
+// SetFilter applies a filter and resets the cursor, which may now point past
+// the end of the shorter list.
+func (m *Model) SetFilter(f string) {
+	m.Filter = f
+	m.Cursor = 0
+	m.RefreshSelection()
+}
+
 // optsFor returns the effective options for a provider: preset values
 // overlaid with the user's overrides.
 func (m *Model) optsFor(p provider.Provider) map[string]any {
@@ -199,10 +222,15 @@ func (m *Model) SetValue(p provider.Provider, key string, value any) {
 
 // refreshPlan rebuilds the plan for the selected provider. It is called after
 // every edit so the diff pane is never stale relative to the form.
+//
+// A failure clears m.Plan as well as setting PlanErr: leaving the previous
+// plan in place would show a diff for a configuration that no longer matches
+// what the form says.
 func (m *Model) refreshPlan() {
 	p := m.Selected()
 	if p == nil {
 		m.Plan = nil
+		m.PlanErr = nil
 		return
 	}
 	opts := m.optsFor(p)
@@ -214,13 +242,26 @@ func (m *Model) refreshPlan() {
 	}
 	// The preset id is recorded so the backup manifest and the status bar can
 	// name what was applied, not just which provider.
-	plan.PresetID = m.Presets[p.ID()]
-	m.PlanErr = nil
+	plan.PresetID = m.selectedPresetID(p)
 	if err := plan.Describe(); err != nil {
 		m.PlanErr = err
+		m.Plan = nil
 		return
 	}
+	m.PlanErr = nil
 	m.Plan = plan
+}
+
+// selectedPresetID returns the preset the user picked, or the first one, which
+// is what the picker shows when nothing was chosen.
+func (m *Model) selectedPresetID(p provider.Provider) string {
+	if id := m.Presets[p.ID()]; id != "" {
+		return id
+	}
+	if len(p.Presets()) > 0 {
+		return p.Presets()[0].ID
+	}
+	return ""
 }
 
 // RefreshSelection recomputes the plan for the newly selected provider and
@@ -300,69 +341,84 @@ func (m *Model) Undo() error {
 }
 
 // RunBenchmark measures every preset endpoint of the selected provider.
-func (m *Model) RunBenchmark() {
+//
+// The goroutine does not touch the model. It writes into a channel that
+// update.go drains as a tea.Cmd, so the mutation happens on the UI goroutine
+// where the rest of the state lives. Writing m.Bench directly from here races
+// with View reading it.
+func (m *Model) RunBenchmark() tea.Cmd {
 	p := m.Selected()
 	if p == nil {
-		return
+		return nil
 	}
 	m.BenchRunning = true
 	m.Bench = nil
 
-	// Collect the distinct endpoints across all presets.
+	urls := BenchURLs(p)
+	if len(urls) == 0 {
+		m.BenchRunning = false
+		m.setErr("%s has no benchmarkable presets", p.ID())
+		return nil
+	}
+
+	ctx := m.Ctx()
+	return func() tea.Msg {
+		res, err := p.Benchmark(ctx, urls)
+		return BenchDoneMsg{rows: toBenchRows(res), err: err}
+	}
+}
+
+// BenchDoneMsg carries a finished measurement back to the UI goroutine.
+type BenchDoneMsg struct {
+	rows []BenchRow
+	err  error
+}
+
+// ApplyBench records the results of a finished measurement.
+func (m *Model) ApplyBench(msg BenchDoneMsg) {
+	m.BenchRunning = false
+	if msg.err != nil {
+		m.setErr("benchmark failed: %v", msg.err)
+		return
+	}
+	m.Bench = msg.rows
+	if fastest := rowsFastest(m.Bench); fastest != nil {
+		m.setOK("最快：%s（%d ms）", fastest.Name, fastest.MS)
+	} else {
+		m.setErr("所有镜像均不可达")
+	}
+}
+
+// BenchURLs collects the distinct endpoints across every preset of p.
+func BenchURLs(p provider.Provider) []string {
 	seen := map[string]bool{}
 	var urls []string
 	for _, pr := range p.Presets() {
 		for _, v := range pr.Opts {
 			s, ok := v.(string)
-			if !ok || !strings.HasPrefix(s, "http") {
+			if !ok || !strings.HasPrefix(s, "http") || seen[s] {
 				continue
 			}
-			if !seen[s] {
-				seen[s] = true
-				urls = append(urls, s)
-			}
+			seen[s] = true
+			urls = append(urls, s)
 		}
 	}
-	if len(urls) == 0 {
-		m.BenchRunning = false
-		m.setErr("%s has no benchmarkable presets", p.ID())
-		return
-	}
-
-	go func() {
-		res, err := p.Benchmark(m.Ctx(), urls)
-		m.BenchRunning = false
-		if err != nil {
-			m.setErr("benchmark failed: %v", err)
-			return
-		}
-		sort.SliceStable(res, func(i, j int) bool {
-			if res[i].OK != res[j].OK {
-				return res[i].OK
-			}
-			return res[i].MS < res[j].MS
-		})
-		rows := make([]BenchRow, 0, len(res))
-		for _, r := range res {
-			rows = append(rows, BenchRow{Name: r.Name, URL: r.URL, MS: r.MS, OK: r.OK, Err: r.Err})
-		}
-		m.Bench = rows
-		if fastest := rowsFastest(rows); fastest != nil {
-			m.setOK("最快：%s（%d ms）", fastest.Name, fastest.MS)
-		} else {
-			m.setErr("所有镜像均不可达")
-		}
-	}()
+	return urls
 }
 
-// BenchFastest returns the fastest successful result, or nil.
-func (m *Model) BenchFastest() *BenchRow {
-	for i := range m.Bench {
-		if m.Bench[i].OK {
-			return &m.Bench[i]
+// toBenchRows sorts results fastest-first and flattens them for the view.
+func toBenchRows(res []provider.Result) []BenchRow {
+	sort.SliceStable(res, func(i, j int) bool {
+		if res[i].OK != res[j].OK {
+			return res[i].OK
 		}
+		return res[i].MS < res[j].MS
+	})
+	rows := make([]BenchRow, 0, len(res))
+	for _, r := range res {
+		rows = append(rows, BenchRow{Name: r.Name, URL: r.URL, MS: r.MS, OK: r.OK, Err: r.Err})
 	}
-	return nil
+	return rows
 }
 
 func rowsFastest(rows []BenchRow) *BenchRow {
@@ -399,20 +455,6 @@ func shortID(b *core.Backup) string {
 	return b.ID
 }
 
-// Diff renders the pending plan as text, for the diff pane and for the
-// headless mode.
-func (m *Model) Diff() string {
-	if m.Plan == nil || m.Plan.Empty() {
-		return "  (no changes)"
-	}
-	var b strings.Builder
-	for _, c := range m.Plan.Changes {
-		b.WriteString(core.Diff(c))
-		b.WriteString("\n")
-	}
-	return strings.TrimRight(b.String(), "\n")
-}
-
 // PresetLabel returns the label of the active preset, or "custom".
 func (m *Model) PresetLabel(p provider.Provider) string {
 	if id := m.Presets[p.ID()]; id != "" {
@@ -425,13 +467,3 @@ func (m *Model) PresetLabel(p provider.Provider) string {
 	}
 	return "custom"
 }
-
-// Timestamp formats a time for display.
-func Timestamp(t time.Time) string { return t.Local().Format("15:04:05") }
-
-// unused imports guard: these are referenced by the headless mode that
-// follows, and keeping them here documents the dependency direction.
-var (
-	_ = config.FormatINI
-	_ = env.Get
-)
