@@ -178,6 +178,13 @@ func (m Model) updateFilter(s string) (tea.Model, tea.Cmd) {
 		m.filtering = false
 		m.filterDraft = ""
 		return m, nil
+	case "ctrl+c":
+		// Quitting must stay reachable while typing. The filter prompt
+		// otherwise swallows every key, including the one that exits, so a
+		// user who opened it by accident cannot get back to a state where
+		// ctrl+c works.
+		m.app.Quit = true
+		return m, tea.Quit
 	case "enter":
 		m.filtering = false
 		m.app.SetFilter(m.filterDraft)

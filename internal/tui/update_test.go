@@ -97,6 +97,51 @@ func TestReloadedMsgReachesTheModel(t *testing.T) {
 	_ = next
 }
 
+// TestCtrlCQuitsWhileFiltering is the regression test for a key that could trap
+// the user: the filter prompt swallows every keystroke, so without an explicit
+// case for it, ctrl+c does nothing once the prompt is open.
+func TestCtrlCQuitsWhileFiltering(t *testing.T) {
+	am := newModel(t, &stub{id: "pip", title: "Pip", cat: provider.CategoryLanguage})
+	m := New(am, nil)
+	m.filtering = true
+
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	if cmd == nil {
+		t.Fatal("ctrl+c while filtering returned no quit command")
+	}
+	nm, ok := next.(Model)
+	if !ok {
+		t.Fatalf("Update returned %T, want Model", next)
+	}
+	if !nm.app.Quit {
+		t.Error("ctrl+c while filtering did not set Quit")
+	}
+}
+
+// TestFilterEnterStillApplies keeps the ctrl+c case from breaking the normal
+// path: enter must commit the draft rather than close the prompt.
+func TestFilterEnterStillApplies(t *testing.T) {
+	am := newModel(t, &stub{id: "pip", title: "Pip", cat: provider.CategoryLanguage})
+	m := New(am, nil)
+	m.filtering = true
+	m.filterDraft = "pip"
+
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	nm, ok := next.(Model)
+	if !ok {
+		t.Fatalf("Update returned %T, want Model", next)
+	}
+	if nm.filtering {
+		t.Error("enter did not close the filter prompt")
+	}
+	if nm.app.Filter != "pip" {
+		t.Errorf("filter = %q, want the committed draft", nm.app.Filter)
+	}
+	if nm.app.Quit {
+		t.Error("enter while filtering quit the program")
+	}
+}
+
 // TestTickCommandDeliversTickMsg documents the wiring between tickCmd and the
 // tickMsg the handler switches on. A mismatch would make the timer fire into a
 // type nobody handles.
