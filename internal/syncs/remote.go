@@ -2,6 +2,7 @@ package syncs
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -21,12 +22,19 @@ const httpTimeout = 20 * time.Second
 // credential prompt from hanging the command.
 const lsRemoteTimeout = 20 * time.Second
 
+// ErrNotFound reports that a file does not exist at the requested commit. It is
+// a sentinel rather than a formatted error so the caller can tell "the branch
+// does not carry this plugin" from "the network failed", which are very
+// different problems with very different handling.
+var ErrNotFound = errors.New("not found at that commit")
+
 // remote is the set of transport operations sync needs. It is an interface so
 // tests can supply a fake without any network access at all.
 type remote interface {
 	// BranchSHA resolves a branch to its current commit SHA.
 	BranchSHA(ctx context.Context, repo, branch string) (string, error)
-	// File returns the content of path at a pinned commit.
+	// File returns the content of path at a pinned commit. It returns
+	// ErrNotFound when the file legitimately does not exist at that commit.
 	File(ctx context.Context, repo, sha, path string) ([]byte, error)
 }
 
@@ -127,6 +135,11 @@ func (r *gitRemote) File(ctx context.Context, repo, sha, path string) ([]byte, e
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode == http.StatusNotFound {
+		// Distinguish "the branch does not carry this file" from a transport
+		// failure: the caller reports the former as a dropped source.
+		return nil, fmt.Errorf("fetch %s: %w", path, ErrNotFound)
+	}
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("fetch %s: HTTP %d", path, resp.StatusCode)
 	}

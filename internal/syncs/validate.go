@@ -3,6 +3,7 @@ package syncs
 import (
 	"fmt"
 	"runtime"
+	"sort"
 	"strings"
 
 	"keep-mirrors/internal/engine"
@@ -24,7 +25,8 @@ func validationCtx() provider.Context {
 }
 
 // validatePlugin compiles a downloaded plugin in a sandbox and checks that it
-// satisfies the contract this binary speaks.
+// satisfies the contract this binary speaks, returning the plugin's own release
+// version as declared by the module table.
 //
 // This is the guard the plugin branch relies on. A branch commit that raises
 // api.major, or that calls a km.* function this binary never implemented, is
@@ -33,46 +35,57 @@ func validationCtx() provider.Context {
 // Compiling rather than pattern-matching matters: a Lua chunk only fails on an
 // undefined global when it is actually called, and status()/plan() are called
 // during validation, so a missing km.* surface shows up now.
-func validatePlugin(name string, body []byte) error {
+//
+// The version comes back from the same loaded module the checks ran against, so
+// there is no second parse to drift from what was actually validated.
+func validatePlugin(name string, body []byte) (string, error) {
 	id := strings.TrimSuffix(name, ".lua")
 
 	p, _, err := engine.Load(string(body), engine.DefaultOptions())
 	if err != nil {
-		return fmt.Errorf("does not compile against this binary's contract: %w", err)
+		return "", fmt.Errorf("does not compile against this binary's contract: %w", err)
 	}
 	defer p.Close()
 
 	if p.ID() != id {
-		return fmt.Errorf("file name says %q but the plugin declares id %q", id, p.ID())
+		return "", fmt.Errorf("file name says %q but the plugin declares id %q", id, p.ID())
 	}
 	if p.Meta().API.Major != engine.ContractMajor {
-		return fmt.Errorf("targets contract %d.x, this binary speaks %d.x",
+		return "", fmt.Errorf("targets contract %d.x, this binary speaks %d.x",
 			p.Meta().API.Major, engine.ContractMajor)
 	}
 	// Run the two entry points the tool actually uses. A plugin whose status()
 	// throws would otherwise look fine until the list view rendered.
 	_ = p.Status(validationCtx())
 	if _, err := p.Plan(validationCtx(), firstPresetOpts(p)); err != nil {
-		return fmt.Errorf("plan() failed against this binary: %w", err)
+		return "", fmt.Errorf("plan() failed against this binary: %w", err)
 	}
-	return nil
+	return p.Meta().Version, nil
 }
 
-// pluginVersion extracts M.version from the plugin metadata, if present.
-func pluginVersion(body []byte) string {
-	// Loading the plugin again just for the version would double the cost of
-	// validation for a value that is only recorded for diagnostics, so this
-	// reads the same field the loader would.
-	for _, line := range strings.Split(string(body), "\n") {
-		t := strings.TrimSpace(line)
-		if !strings.HasPrefix(t, "M.version") {
-			continue
-		}
-		if i := strings.Index(t, "="); i >= 0 {
-			return strings.Trim(strings.TrimSpace(t[i+1:]), `"'`)
+// setVersion summarises the versions a plugin set declares.
+//
+// It deliberately does not pick a "newest": plugins evolve independently, so a
+// branch commit can legitimately bump one plugin and leave the rest, and the
+// only honest answer is then that the set is mixed. An earlier version compared
+// the strings with ">", which silently reported 1.9.0 as newer than 1.10.0.
+//
+// This value is diagnostics only — nothing gates on it.
+func setVersion(versions map[string]bool) string {
+	switch len(versions) {
+	case 0:
+		return ""
+	case 1:
+		for v := range versions {
+			return v
 		}
 	}
-	return ""
+	out := make([]string, 0, len(versions))
+	for v := range versions {
+		out = append(out, v)
+	}
+	sort.Strings(out)
+	return strings.Join(out, ", ") + " (mixed)"
 }
 
 // firstPresetOpts returns the first preset's options, matching what the UI

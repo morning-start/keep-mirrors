@@ -2,6 +2,7 @@ package syncs
 
 import (
 	"context"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -37,7 +38,9 @@ func (f *fakeRemote) File(_ context.Context, _, _, path string) ([]byte, error) 
 	}
 	body, ok := f.files[path]
 	if !ok {
-		return nil, os.ErrNotExist
+		// Match the real transport: a missing file is the not-found sentinel,
+		// not a generic error, so the drop-a-source guard is exercised.
+		return nil, fmt.Errorf("%s: %w", path, ErrNotFound)
 	}
 	return []byte(body), nil
 }
@@ -258,12 +261,55 @@ func TestSyncRefusesToDropShippedSources(t *testing.T) {
 	if err == nil {
 		t.Fatal("a set missing a shipped plugin was accepted")
 	}
-	// The download aborts at the missing file, so the message comes from the
-	// fetch rather than from the completeness check. Either way nothing is
-	// written, which is what matters.
+	// The guard must name the dropped source. Before the not-found sentinel
+	// existed this reported a bare HTTP 404, because the download aborted
+	// before the completeness check ever ran.
+	if !strings.Contains(err.Error(), "cargo") {
+		t.Errorf("error %v does not name the missing plugin", err)
+	}
+	if !strings.Contains(err.Error(), "refusing to drop") {
+		t.Errorf("error %v is not the drop-a-source refusal", err)
+	}
 	assertDirEmpty(t, dir, "a refused sync left files behind")
 	if stateFileExists() {
 		t.Error("a refused sync recorded state")
+	}
+}
+
+// TestSetVersionIsNotAStringComparison is the regression test for reporting the
+// wrong version: comparing version strings with ">" says 1.9.0 is newer than
+// 1.10.0, which is false for every real version scheme.
+func TestSetVersionIsNotAStringComparison(t *testing.T) {
+	if got := setVersion(map[string]bool{"1.10.0": true}); got != "1.10.0" {
+		t.Errorf("single version = %q, want 1.10.0", got)
+	}
+	// A branch that bumps one plugin and leaves the rest is legitimate; the
+	// honest answer is that the set is mixed, not that one of them is newest.
+	got := setVersion(map[string]bool{"1.9.0": true, "1.10.0": true})
+	if !strings.Contains(got, "mixed") {
+		t.Errorf("mixed versions = %q, want it to say the set is mixed", got)
+	}
+	if !strings.Contains(got, "1.10.0") || !strings.Contains(got, "1.9.0") {
+		t.Errorf("mixed versions = %q, want both listed", got)
+	}
+	if got := setVersion(map[string]bool{}); got != "" {
+		t.Errorf("no versions = %q, want empty", got)
+	}
+}
+
+// TestSyncReportsVersionFromTheModule checks the version is read from the loaded
+// module rather than re-parsed out of the source text, so it cannot describe a
+// plugin other than the one that was validated.
+func TestSyncReportsVersionFromTheModule(t *testing.T) {
+	dir := sandbox(t)
+	r := &fakeRemote{sha: strings.Repeat("3", 40), files: fullSet("2.0.1")}
+
+	res, err := run(context.Background(), r, testConfig(dir), Options{})
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if res.Version != "2.0.1" {
+		t.Errorf("Version = %q, want 2.0.1", res.Version)
 	}
 }
 

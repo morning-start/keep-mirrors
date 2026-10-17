@@ -2,6 +2,7 @@ package syncs
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"sort"
@@ -127,21 +128,31 @@ func fetchSet(ctx context.Context, r remote, cfg Config, sha string) (map[string
 	}
 
 	files := make(map[string][]byte, len(names))
-	version := ""
+	versions := map[string]bool{}
 	for _, name := range names {
 		path := PluginDirInRepo + "/" + name
 		body, err := r.File(ctx, cfg.Repo, sha, path)
 		if err != nil {
+			// A curated plugin missing at the pinned commit is the drop-a-source
+			// case, not a download failure. Reporting it here rather than as a
+			// generic fetch error is what makes the message actionable: the
+			// earlier code aborted on the 404 and never reached the completeness
+			// check, so the user saw "HTTP 404" for what is really an upstream
+			// mistake.
+			if errors.Is(err, ErrNotFound) {
+				return nil, "", fmt.Errorf(
+					"the plugin set at %s is missing %s; refusing to drop sources that this binary ships",
+					shortSHA(sha), idOf(name))
+			}
 			return nil, "", err
 		}
-		if err := validatePlugin(name, body); err != nil {
+		ver, err := validatePlugin(name, body)
+		if err != nil {
 			return nil, "", fmt.Errorf("%s: %w", name, err)
 		}
 		files[name] = body
-		// All files in one set should declare the same version; if they do
-		// not, the newest is the useful thing to report.
-		if v := pluginVersion(body); v > version {
-			version = v
+		if ver != "" {
+			versions[ver] = true
 		}
 	}
 
@@ -150,8 +161,11 @@ func fetchSet(ctx context.Context, r remote, cfg Config, sha string) (map[string
 			"the plugin set at %s is missing %s; refusing to drop sources that this binary ships",
 			shortSHA(sha), strings.Join(missing, ", "))
 	}
-	return files, version, nil
+	return files, setVersion(versions), nil
 }
+
+// idOf turns "pip.lua" into "pip", for messages.
+func idOf(name string) string { return strings.TrimSuffix(name, ".lua") }
 
 // curatedNames lists the .lua files in the curated set.
 //
