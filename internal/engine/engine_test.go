@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"keep-mirrors/internal/paths"
 	"keep-mirrors/internal/provider"
 
 	"github.com/yuin/gopher-lua"
@@ -229,6 +230,57 @@ func TestSandboxConfinesFilesystem(t *testing.T) {
 	}
 	// Either a Lua error (RaiseError) or nil is acceptable; both mean the
 	// content did not reach the plugin.
+}
+
+// TestSandboxConfinesSymlinkEscape is the security test for the escape that a
+// purely lexical containment check misses.
+//
+// A symlink placed inside home, pointing outside it, has a path that really
+// does start with the home directory, so a name-prefix check approves it and
+// the subsequent open follows the link out. Only resolving the link catches it.
+//
+// Creating a symlink needs a privilege Windows does not grant by default, so
+// this skips there rather than being deleted.
+func TestSandboxConfinesSymlinkEscape(t *testing.T) {
+	home := t.TempDir()
+	outside := t.TempDir()
+
+	// The plugin reads through this link; the test asserts it gets nothing.
+	secret := filepath.Join(outside, "secret.txt")
+	if err := os.WriteFile(secret, []byte("TOP-SECRET"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(home, "escape.txt")
+	if err := os.Symlink(secret, link); err != nil {
+		t.Skipf("cannot create symlinks here: %v", err)
+	}
+
+	old := paths.Home()
+	paths.OverrideHome(home, filepath.Join(home, ".config"))
+	defer paths.OverrideHome(old, filepath.Join(old, ".config"))
+
+	st, err := New(DefaultOptions())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer st.Close()
+
+	// km.home() echoes the sandboxed home, so the plugin builds the link path
+	// the same way a real one would: from a path it believes is safe.
+	if err := st.LoadChunk(`
+		local M = {}
+		function M.probe()
+			return km.fs.read(km.home() .. "/escape.txt")
+		end
+		return M
+	`); err != nil {
+		t.Fatalf("LoadChunk: %v", err)
+	}
+
+	res, err := st.CallMethod(st.Module(), "probe")
+	if err == nil && len(res) > 0 && res[0].String() == "TOP-SECRET" {
+		t.Fatal("a symlink inside home leaked a file from outside it")
+	}
 }
 
 func TestContextKillsRunawayPlugin(t *testing.T) {

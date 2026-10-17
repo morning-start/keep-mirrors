@@ -265,10 +265,13 @@ func readWithinHome(L *lua.LState, p string) (string, bool) {
 	return string(body), true
 }
 
-// withinHome is the containment check. It resolves symlinks where possible so
-// a plugin cannot escape via a link inside home pointing outside it.
+// withinHome is the containment check for anything a plugin asks us to open.
+//
+// It resolves symlinks before comparing, not just lexically: a link inside home
+// pointing outside it is a real escape, and the lexical check would happily
+// approve it because the *name* starts with home.
 func withinHome(p string) bool {
-	return paths.WithinHome(p)
+	return paths.WithinHomeResolved(p)
 }
 
 // execAllowed checks the whitelist. An empty whitelist means "any executable

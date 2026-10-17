@@ -101,11 +101,47 @@ func Expand(p string) string {
 }
 
 // WithinHome reports whether p (after expansion) stays inside the home
-// directory. It is the containment check used by the future sandbox and by
-// the TUI's safety warnings today.
+// directory. This is the purely lexical check: it is cheap, has no I/O, and is
+// what the TUI's safety warnings use.
+//
+// It deliberately does not resolve symlinks, so it is NOT sufficient on its own
+// as a security boundary. Use WithinHomeResolved for that.
 func WithinHome(p string) bool {
+	return within(home, Expand(p))
+}
+
+// WithinHomeResolved is WithinHome after resolving symlinks, for every caller
+// that is actually going to open the file.
+//
+// The lexical check alone is not a boundary: on POSIX a symlink inside home
+// pointing at /etc, read through km.fs.read, passes WithinHome (the path really
+// does start with the home directory) and then the open follows the link out.
+// Resolving both the candidate and home closes that, and resolving home too
+// matters because home is frequently itself a symlink (on macOS /home, and any
+// Windows path reached through an 8.3 short name).
+//
+// A path that does not exist yet is resolved as far as it does exist, so the
+// check still works for "would this write land inside home".
+func WithinHomeResolved(p string) bool {
 	abs := Expand(p)
-	rel, err := filepath.Rel(home, abs)
+	if !within(home, abs) {
+		return false
+	}
+	root := home
+	if r, err := filepath.EvalSymlinks(home); err == nil {
+		root = r
+	}
+	resolved, ok := resolveExisting(abs)
+	if !ok {
+		return false
+	}
+	return within(root, resolved)
+}
+
+// within reports whether abs is root or sits below it. Both must be clean
+// absolute paths.
+func within(root, abs string) bool {
+	rel, err := filepath.Rel(root, abs)
 	if err != nil {
 		return false
 	}
@@ -113,6 +149,30 @@ func WithinHome(p string) bool {
 		return false
 	}
 	return true
+}
+
+// resolveExisting resolves the symlinks in p as far as p exists, then re-appends
+// the components that do not. EvalSymlinks fails outright on a missing path,
+// which would otherwise make every "does this not-yet-created file stay in
+// home" question answerable only as "no".
+func resolveExisting(p string) (string, bool) {
+	cur := p
+	var tail []string
+	for {
+		if r, err := filepath.EvalSymlinks(cur); err == nil {
+			for i := len(tail) - 1; i >= 0; i-- {
+				r = filepath.Join(r, tail[i])
+			}
+			return r, true
+		}
+		parent := filepath.Dir(cur)
+		if parent == cur {
+			// Walked to the volume root without resolving anything.
+			return "", false
+		}
+		tail = append(tail, filepath.Base(cur))
+		cur = parent
+	}
 }
 
 // EnvOr returns os.Getenv(k) or def when unset.

@@ -288,6 +288,23 @@ UI 会显示「2 处待改」、`apply` 会原样重写一遍文件。
 `m.Bench` / `m.BenchRunning`——那与 `View` 并发读同一个 struct，是数据
 竞争（本机无 gcc，`-race` 跑不起来，所以只能靠约定）。
 
+### 4.9 路径包含检查必须解析符号链接
+
+`paths.WithinHome` 是**纯词法**的，只比对路径字符串。`~` 里放一个指向外面
+的符号链接，字符串确实以 home 开头，词法检查会放行，随后 `os.Open` 跟着
+链接跑出去了。
+
+所以**凡是真要打开文件的地方**用 `paths.WithinHomeResolved`（先
+`EvalSymlinks` 再比对，home 自身也要解析，因为 home 本身常是链接）。词法版
+只用于纯展示性的告警。
+
+路径不存在时 `EvalSymlinks` 会直接失败，所以 `resolveExisting` 逐级向上
+解析到存在的部分，再拼回尾部——否则「这个还没创建的文件是否落在 home 里」
+永远只能答「否」。
+
+本机创建符号链接在 PowerShell 里需要管理员权限，但 Go 的 `os.Symlink` 能
+成功，所以相关测试不会 skip——它们真的验证了这条边界。
+
 ---
 
 ## 5. 怎么加一个新镜像源

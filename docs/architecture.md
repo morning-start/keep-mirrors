@@ -187,7 +187,7 @@ stderr——一个拼错的插件不该让整个工具起不来。
 
 | 层 | 机制 | 代码位置 |
 |---|---|---|
-| 文件 | 只能读 `~` 以内，且只读；`..` 越界抛错 | `api.go: readWithinHome` |
+| 文件 | 只能读 `~` 以内，先解析符号链接再比对；越过边界抛错 | `api.go: readWithinHome` |
 | 标准库 | `SkipOpenLibs`，只开 base/string/table/math + 裁剪版 os | `engine.go: openSafe` |
 | 全局函数 | `dofile`/`loadfile`/`load`/`require`/`module`/`newproxy`/`collectgarbage` 直接置 nil | `engine.go: removeUnsafeGlobals` |
 | os 危险函数 | `execute`/`exit`/`remove`/`rename`/`setenv`/`tmpname` 置 nil | 同上 |
