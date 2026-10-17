@@ -32,7 +32,6 @@ const (
 type LuaProvider struct {
 	state *State
 	mod   *lua.LTable // the module table returned by the plugin
-	src   string      // plugin source, kept for reload diagnostics
 
 	id       string
 	title    string
@@ -60,7 +59,7 @@ func Load(src string, opts Options) (*LuaProvider, *State, error) {
 		return nil, nil, fmt.Errorf("plugin did not return a module table")
 	}
 
-	p := &LuaProvider{state: st, src: src, mod: mod}
+	p := &LuaProvider{state: st, mod: mod}
 	if err := p.readMeta(mod); err != nil {
 		st.Close()
 		return nil, nil, err

@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // withHome points the package at h for the duration of the test.
@@ -106,5 +107,31 @@ func TestWithinHomeResolvedAllowsMissingPath(t *testing.T) {
 
 	if !WithinHomeResolved(filepath.Join(h, "not", "created", "yet.conf")) {
 		t.Error("a not-yet-existing file inside home was rejected")
+	}
+}
+
+// TestWithinHomeResolvedTerminates checks that the parent walk used to resolve a
+// missing path always terminates.
+//
+// An infinite loop in a containment check is worse than the escape it guards
+// against: it would hang every km.fs call. The awkward inputs below are the ones
+// where filepath.Dir stops making progress — a bare drive-relative path and a
+// volume root — so the walk has to notice it cannot climb any higher.
+func TestWithinHomeResolvedTerminates(t *testing.T) {
+	h := t.TempDir()
+	withHome(t, h)
+
+	inputs := []string{"C:foo", "C:", `C:\`, "/", ".", "..", "~/..", "~/../../.."}
+	if os.PathSeparator == '\\' {
+		inputs = append(inputs, `\\?\C:\x`, `\\.\PhysicalDrive0`)
+	}
+	for _, in := range inputs {
+		done := make(chan bool, 1)
+		go func(p string) { done <- WithinHomeResolved(p) }(in)
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			t.Fatalf("WithinHomeResolved(%q) did not terminate", in)
+		}
 	}
 }

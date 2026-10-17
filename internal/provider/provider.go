@@ -131,20 +131,6 @@ type Result struct {
 	Err  string
 }
 
-// SupportsPlatform reports whether m claims to run on the given GOOS. An empty
-// Platforms list means the plugin did not say, which is treated as "any".
-func (m Meta) SupportsPlatform(goos string) bool {
-	if len(m.Platforms) == 0 {
-		return true
-	}
-	for _, p := range m.Platforms {
-		if p == goos {
-			return true
-		}
-	}
-	return false
-}
-
 // PresetByID returns the preset with the given id, or nil. Declaration order
 // is preserved by the callers, so this is a lookup and never a re-sort.
 func PresetByID(ps []Preset, id string) *Preset {

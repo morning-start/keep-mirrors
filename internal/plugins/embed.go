@@ -15,7 +15,6 @@ package plugins
 
 import (
 	"embed"
-	"fmt"
 	"strconv"
 	"strings"
 )
@@ -122,17 +121,4 @@ func validSHA(s string) bool {
 		}
 	}
 	return true
-}
-
-// FormatProvenance renders a provenance record, for the stamp command.
-func FormatProvenance(p Provenance) string {
-	var b strings.Builder
-	fmt.Fprintf(&b, "sha=%s\n", p.SHA)
-	if p.Source != "" {
-		fmt.Fprintf(&b, "source=%s\n", p.Source)
-	}
-	if p.Branch != "" {
-		fmt.Fprintf(&b, "branch=%s\n", p.Branch)
-	}
-	return b.String()
 }

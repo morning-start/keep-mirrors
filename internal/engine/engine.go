@@ -168,9 +168,6 @@ func (s *State) Close() {
 	}
 }
 
-// DoString runs source in the sandbox under the default timeout.
-func (s *State) DoString(src string) error { return s.LoadChunk(src) }
-
 // CallMethod invokes a function stored in a Lua table (the plugin module)
 // with args and returns its results.
 //
@@ -226,9 +223,10 @@ func (s *State) Module() *lua.LTable {
 // never from a path the plugin chooses.
 //
 // A plugin ends with `return M`, but a Lua chunk's return value is discarded
-// by DoString. We therefore wrap the source in `__km_module = (function() ... end)()`
-// so the module table is captured and reachable from Go. The wrapper costs one
-// function frame and leaves the plugin source untouched.
+// by gopher-lua's DoString. We therefore wrap the source in
+// `__km_module = (function() ... end)()` so the module table is captured and
+// reachable from Go. The wrapper costs one function frame and leaves the plugin
+// source untouched.
 func (s *State) LoadChunk(src string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

@@ -174,11 +174,3 @@ func resolveExisting(p string) (string, bool) {
 		cur = parent
 	}
 }
-
-// EnvOr returns os.Getenv(k) or def when unset.
-func EnvOr(k, def string) string {
-	if v := os.Getenv(k); v != "" {
-		return v
-	}
-	return def
-}
