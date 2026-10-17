@@ -3,6 +3,7 @@ package env
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -194,19 +195,11 @@ func stripBlock(lines []string, sh ShellKind) []string {
 
 // WriteProfile writes body to path, creating parents as needed.
 func WriteProfile(path, body string) error {
-	d := dirOf(path)
+	d := filepath.Dir(path)
 	if err := os.MkdirAll(d, 0o755); err != nil {
 		return fmt.Errorf("create %s: %w", d, err)
 	}
 	return os.WriteFile(path, []byte(body), 0o644)
-}
-
-// dirOf returns the directory part of a slash-separated path.
-func dirOf(p string) string {
-	if i := strings.LastIndexByte(p, '/'); i > 0 {
-		return p[:i]
-	}
-	return "."
 }
 
 // sortedKeys returns the keys of m in ascending order.

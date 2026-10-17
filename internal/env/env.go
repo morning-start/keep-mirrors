@@ -21,7 +21,6 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"sort"
 	"strings"
 
 	"keep-mirrors/internal/paths"
@@ -35,29 +34,6 @@ func Set(name, value string) error { return os.Setenv(name, value) }
 
 // Unset removes name from the current process environment only.
 func Unset(name string) error { return os.Unsetenv(name) }
-
-// Snapshot captures a set of variables for later restoration.
-type Snapshot map[string]string
-
-// Take records the current values of names.
-func Take(names ...string) Snapshot {
-	s := make(Snapshot, len(names))
-	for _, n := range names {
-		s[n] = os.Getenv(n)
-	}
-	return s
-}
-
-// Restore puts the captured values back into the current process.
-func (s Snapshot) Restore() {
-	for n, v := range s {
-		if v == "" {
-			_ = os.Unsetenv(n)
-			continue
-		}
-		_ = os.Setenv(n, v)
-	}
-}
 
 // ShellKind identifies the shell whose rc file we edit.
 type ShellKind string
@@ -127,10 +103,6 @@ func ProfilePath(sh ShellKind) string {
 // honoured everywhere, which is what makes profile editing testable.
 func homeDir() string { return paths.Home() }
 
-// Managed is the set of variables keep-mirrors writes, and the comment marker
-// used to find its own block in a profile file.
-const managedMarker = "keep-mirrors"
-
 // ShellExport renders one variable as shell source text.
 func ShellExport(sh ShellKind, name, value string) string {
 	switch sh {
@@ -161,14 +133,4 @@ func ShellComment(sh ShellKind, text string) string {
 		return ":: " + text
 	}
 	return "# " + text
-}
-
-// SortNames returns names in stable order, for deterministic output.
-func SortNames(m map[string]string) []string {
-	out := make([]string, 0, len(m))
-	for k := range m {
-		out = append(out, k)
-	}
-	sort.Strings(out)
-	return out
 }
