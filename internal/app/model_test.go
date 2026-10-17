@@ -237,3 +237,135 @@ var errFake = fakeError("plugin exploded")
 type fakeError string
 
 func (e fakeError) Error() string { return string(e) }
+
+// TestReplaceProvidersKeepsSelections checks the contract a hot reload must
+// honour: swapping the provider set changes how plugins behave, not what the
+// user chose. Resetting the preset would silently undo their selection.
+func TestReplaceProvidersKeepsSelections(t *testing.T) {
+	old := newFake("pip", provider.CategoryLanguage,
+		preset("tuna", "TUNA", map[string]any{"index": "https://tuna.invalid"}),
+		preset("aliyun", "Aliyun", map[string]any{"index": "https://aliyun.invalid"}),
+	)
+	m := New(fakeRegistry(t, old))
+	m.RefreshSelection()
+	m.SelectPreset(old, "aliyun")
+
+	// The reloaded plugin has the same ids: it is the same source, edited.
+	fresh := newFake("pip", provider.CategoryLanguage,
+		preset("tuna", "TUNA", map[string]any{"index": "https://tuna.invalid"}),
+		preset("aliyun", "Aliyun", map[string]any{"index": "https://aliyun.invalid"}),
+	)
+	fresh.title = "Pip (edited)"
+
+	m.ReplaceProviders([]provider.Provider{fresh})
+
+	if got := m.Presets["pip"]; got != "aliyun" {
+		t.Errorf("preset selection = %q after reload, want aliyun to survive", got)
+	}
+	sel := m.Selected()
+	if sel == nil || sel.ID() != "pip" {
+		t.Fatal("selection moved away from pip after reload")
+	}
+	if sel.Title() != "Pip (edited)" {
+		t.Error("the reloaded provider is not the one in use")
+	}
+	if m.PlanErr != nil {
+		t.Errorf("plan was not rebuilt after reload: %v", m.PlanErr)
+	}
+}
+
+// TestReplaceProvidersKeepsCursorOnSameID checks that the cursor follows the
+// provider id rather than the index: a reload can change titles and therefore
+// the sorted order, and an index would then point at a different source.
+func TestReplaceProvidersKeepsCursorOnSameID(t *testing.T) {
+	m := New(fakeRegistry(t,
+		newFake("aaa", provider.CategoryLanguage),
+		newFake("zzz", provider.CategoryLanguage),
+	))
+	m.RefreshSelection()
+	m.MoveTo(1) // select zzz
+	if p := m.Selected(); p == nil || p.ID() != "zzz" {
+		t.Fatalf("setup: selected %v, want zzz", p)
+	}
+
+	// After reload zzz sorts first, because its title changed.
+	renamed := newFake("zzz", provider.CategoryLanguage)
+	renamed.title = "AAA-like title"
+	m.ReplaceProviders([]provider.Provider{
+		newFake("aaa", provider.CategoryLanguage),
+		renamed,
+	})
+
+	if p := m.Selected(); p == nil || p.ID() != "zzz" {
+		t.Errorf("cursor landed on %v after reload, want it to stay on zzz", p)
+	}
+}
+
+// TestReplaceProvidersDropsVanishedProvider checks the case where the selected
+// plugin was deleted: the cursor must clamp into range rather than dangle.
+func TestReplaceProvidersDropsVanishedProvider(t *testing.T) {
+	m := New(fakeRegistry(t,
+		newFake("aaa", provider.CategoryLanguage),
+		newFake("bbb", provider.CategoryLanguage),
+	))
+	m.RefreshSelection()
+	m.MoveTo(1)
+
+	m.ReplaceProviders([]provider.Provider{newFake("aaa", provider.CategoryLanguage)})
+
+	if got := m.Count(); got != 1 {
+		t.Fatalf("Count() = %d after removal, want 1", got)
+	}
+	if p := m.Selected(); p == nil || p.ID() != "aaa" {
+		t.Errorf("Selected() = %v, want the surviving provider", p)
+	}
+}
+
+// TestApplyReloadReportsBrokenPlugins checks that a plugin failing to compile is
+// surfaced. Silently keeping the old version would make a user believe their
+// edit applied.
+func TestApplyReloadReportsBrokenPlugins(t *testing.T) {
+	m := New(fakeRegistry(t, newFake("pip", provider.CategoryLanguage)))
+	m.RefreshSelection()
+
+	m.ApplyReload(ReloadedMsg{Changed: false, Broken: []string{"npm"}})
+
+	if !m.StatusErr {
+		t.Error("a broken plugin was not reported as an error")
+	}
+	if !strings.Contains(m.StatusMsg, "npm") {
+		t.Errorf("status = %q, want it to name the broken plugin", m.StatusMsg)
+	}
+}
+
+// TestApplyReloadNoChangeIsQuiet checks that the steady state, which happens
+// every second, does not spam the status bar.
+func TestApplyReloadNoChangeIsQuiet(t *testing.T) {
+	m := New(fakeRegistry(t, newFake("pip", provider.CategoryLanguage)))
+	m.RefreshSelection()
+
+	m.ApplyReload(ReloadedMsg{Changed: false})
+
+	if m.StatusMsg != "" {
+		t.Errorf("an unchanged poll wrote %q to the status bar", m.StatusMsg)
+	}
+}
+
+// TestApplyReloadInstallsNewSet checks the happy path end to end.
+func TestApplyReloadInstallsNewSet(t *testing.T) {
+	m := New(fakeRegistry(t, newFake("pip", provider.CategoryLanguage)))
+	m.RefreshSelection()
+
+	fresh := newFake("npm", provider.CategoryLanguage)
+	m.ApplyReload(ReloadedMsg{Changed: true, Providers: []provider.Provider{fresh}})
+
+	if p, ok := m.Reg.Get("npm"); !ok || p.ID() != "npm" {
+		t.Error("the reloaded provider was not registered")
+	}
+	if _, ok := m.Reg.Get("pip"); ok {
+		t.Error("the previous provider survived a full replacement")
+	}
+	if m.StatusMsg == "" {
+		t.Error("a successful reload was not reported")
+	}
+}
