@@ -1,0 +1,38 @@
+# 编译产物
+/km
+/km.exe
+*.exe
+*.test
+*.out
+
+# Windows 构建残留
+*.pdb
+*.ilk
+
+# 覆盖率与性能剖析
+coverage.txt
+cpu.prof
+mem.prof
+
+# Go 工作区（多模块开发时才需要）
+go.work
+go.work.sum
+
+# 编辑器
+.idea/
+.vscode/
+*.swp
+*~
+
+# 操作系统
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# 本地状态：备份、日志、用户插件都不该进版本库
+# （路径来自 os.UserConfigDir()/keep-mirrors，Windows 上是 %APPDATA%）
+/appdata/
+*.local.yaml
+
+# 手动测速时在本机产生的临时配置不要提交
+/.tmp/

@@ -1,0 +1,16 @@
+# 统一按 LF 入库，避免 Windows 上 CRLF/LF 反复变化污染 diff
+* text=auto eol=lf
+
+# 明确标记为文本，防止被当成二进制
+*.go    text
+*.lua   text
+*.md    text
+*.mod   text
+*.sum   text
+.gitignore  text
+.gitattributes text
+
+# Windows 可执行文件与图标按二进制处理
+*.exe   binary
+*.pdb   binary
+*.ico   binary
