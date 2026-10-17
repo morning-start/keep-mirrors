@@ -1,10 +1,8 @@
 // Package registry holds the set of loaded providers.
 //
-// It is intentionally tiny. In the first version providers are registered
-// programmatically; when the Lua engine lands, the registry gains a loader
-// that feeds the same map from plugin modules. Keeping the rest of the
-// program talking to Registry rather than to a package-level map is what makes
-// that swap a local change.
+// The registry owns the current provider set, which is swapped wholesale on a
+// hot reload. Everything else talks to Registry rather than to a package-level
+// map, so a reload is a single Replaced call and not a scattering of updates.
 package registry
 
 import (
@@ -32,6 +30,21 @@ func (r *Registry) Register(p provider.Provider) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.m[p.ID()] = p
+}
+
+// Replace swaps the whole provider set atomically.
+//
+// A reload must not be observable halfway through: registering the new set one
+// provider at a time would let a reader in another goroutine see a mix of old
+// and new VMs, including two different versions of the same plugin.
+func (r *Registry) Replace(ps []provider.Provider) {
+	m := make(map[string]provider.Provider, len(ps))
+	for _, p := range ps {
+		m[p.ID()] = p
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.m = m
 }
 
 // Get returns the provider with the given id.
