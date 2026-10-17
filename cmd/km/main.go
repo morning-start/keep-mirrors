@@ -1,0 +1,459 @@
+// Command km is a terminal UI for managing package-manager mirror sources.
+//
+// By default it opens the interactive interface. Every mirror source is
+// implemented as a Lua plugin (see the plugins directory), loaded from a
+// sandbox that confines them to the user's home directory and gives them a
+// declarative API: a plugin proposes changes, the Go core applies them with a
+// backup taken first.
+//
+// Usage:
+//
+//	km                  open the TUI
+//	km list             list providers and their status
+//	km plan <id>        show what a preset would change, without applying
+//	km apply <id>       apply a preset (--preset to choose, --yes to skip the prompt)
+//	km bench <id>       measure every preset endpoint
+//	km undo             restore the most recent backup
+//	km plugin list      list the loaded plugins
+//	km plugin show <id> print a plugin's metadata
+package main
+
+import (
+	"embed"
+	"fmt"
+	"os"
+	"sort"
+	"strings"
+
+	"keep-mirrors/internal/app"
+	"keep-mirrors/internal/core"
+	"keep-mirrors/internal/engine"
+	"keep-mirrors/internal/provider"
+	"keep-mirrors/internal/registry"
+	"keep-mirrors/internal/tui"
+)
+
+//go:embed all:plugins
+var builtinPlugins embed.FS
+
+func main() {
+	if err := run(os.Args[1:]); err != nil {
+		fmt.Fprintf(os.Stderr, "km: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+func run(args []string) error {
+	engine.BuiltinFS = builtinPlugins
+
+	if len(args) == 0 {
+		return runTUI()
+	}
+
+	switch args[0] {
+	case "list", "ls":
+		return cmdList(args[1:])
+	case "plan":
+		return cmdPlan(args[1:])
+	case "apply":
+		return cmdApply(args[1:])
+	case "bench":
+		return cmdBench(args[1:])
+	case "undo":
+		return cmdUndo(args[1:])
+	case "plugin":
+		return cmdPlugin(args[1:])
+	case "backups":
+		return cmdBackups(args[1:])
+	case "help", "-h", "--help":
+		usage()
+		return nil
+	default:
+		usage()
+		return fmt.Errorf("unknown command %q", args[0])
+	}
+}
+
+// loadRegistry compiles every plugin and builds the provider registry.
+func loadRegistry() (*registry.Registry, []engine.PluginSource, error) {
+	loader := engine.NewLoader()
+	provs, diag, err := loader.Load()
+	if err != nil {
+		return nil, diag, err
+	}
+	reg := registry.New()
+	for _, p := range provs {
+		reg.Register(p)
+	}
+	return reg, diag, nil
+}
+
+// ? commands ?
+
+func runTUI() error {
+	reg, diag, err := loadRegistry()
+	if err != nil {
+		return err
+	}
+	reportBroken(diag)
+
+	m := app.New(reg)
+	m.RefreshSelection()
+	return tui.Run(m)
+}
+
+func cmdList(args []string) error {
+	reg, diag, err := loadRegistry()
+	if err != nil {
+		return err
+	}
+	reportBroken(diag)
+
+	m := app.New(reg)
+	for _, cat := range reg.Categories() {
+		fmt.Printf("%s\n", categoryName(cat))
+		for _, p := range reg.ByCategory()[cat] {
+			st := p.Status(m.Ctx())
+			badge := "○ 未安装"
+			if st.Installed {
+				badge = "○ 未配置"
+				if st.Current != "" {
+					badge = "● 已配置"
+				}
+			}
+			fmt.Printf("  %-16s %-8s %s\n", p.ID(), badge, short(st.Current, 60))
+		}
+	}
+	return nil
+}
+
+func cmdPlan(args []string) error {
+	id, preset, _, err := parseProvider(args)
+	if err != nil {
+		return err
+	}
+	reg, _, err := loadRegistry()
+	if err != nil {
+		return err
+	}
+	p, ok := reg.Get(id)
+	if !ok {
+		return registry.ErrNoProvider(id)
+	}
+
+	m := app.New(reg)
+	opts := presetOpts(p, preset)
+	plan, err := p.Plan(m.Ctx(), opts)
+	if err != nil {
+		return err
+	}
+	if err := plan.Describe(); err != nil {
+		return err
+	}
+	if plan.Empty() {
+		fmt.Println("no changes")
+		return nil
+	}
+	for _, c := range plan.Changes {
+		fmt.Println(core.Diff(c))
+	}
+	for _, w := range plan.Warnings {
+		fmt.Printf("warning: %s\n", w)
+	}
+	return nil
+}
+
+func cmdApply(args []string) error {
+	id, preset, yes, err := parseProvider(args)
+	if err != nil {
+		return err
+	}
+	reg, _, err := loadRegistry()
+	if err != nil {
+		return err
+	}
+	p, ok := reg.Get(id)
+	if !ok {
+		return registry.ErrNoProvider(id)
+	}
+
+	m := app.New(reg)
+	plan, err := p.Plan(m.Ctx(), presetOpts(p, preset))
+	if err != nil {
+		return err
+	}
+	if err := plan.Describe(); err != nil {
+		return err
+	}
+	if plan.Empty() {
+		fmt.Println("nothing to apply")
+		return nil
+	}
+
+	fmt.Printf("Applying %s/%s:\n\n", id, presetLabel(p, preset))
+	for _, c := range plan.Changes {
+		fmt.Println(core.Diff(c))
+	}
+	fmt.Println()
+
+	if !yes && !confirm("apply these changes?") {
+		fmt.Println("aborted")
+		return nil
+	}
+
+	bak, err := core.Apply(plan)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("done. backup: %s\n", backupID(bak))
+	fmt.Println("undo with: km undo")
+	return nil
+}
+
+func cmdBench(args []string) error {
+	id, _, _, err := parseProvider(args)
+	if err != nil {
+		return err
+	}
+	reg, _, err := loadRegistry()
+	if err != nil {
+		return err
+	}
+	p, ok := reg.Get(id)
+	if !ok {
+		return registry.ErrNoProvider(id)
+	}
+
+	var urls []string
+	seen := map[string]bool{}
+	for _, pr := range p.Presets() {
+		for _, v := range pr.Opts {
+			s, ok := v.(string)
+			if !ok || !strings.HasPrefix(s, "http") || seen[s] {
+				continue
+			}
+			seen[s] = true
+			urls = append(urls, s)
+		}
+	}
+	if len(urls) == 0 {
+		return fmt.Errorf("%s has no benchmarkable presets", id)
+	}
+
+	fmt.Printf("measuring %d endpoint(s) for %s...\n", len(urls), id)
+	res, err := p.Benchmark(app.New(reg).Ctx(), urls)
+	if err != nil {
+		return err
+	}
+	sort.SliceStable(res, func(i, j int) bool {
+		if res[i].OK != res[j].OK {
+			return res[i].OK
+		}
+		return res[i].MS < res[j].MS
+	})
+	for _, r := range res {
+		if r.OK {
+			fmt.Printf("  %-28s %5d ms\n", r.Name, r.MS)
+		} else {
+			fmt.Printf("  %-28s %s\n", r.Name, r.Err)
+		}
+	}
+	return nil
+}
+
+func cmdUndo(args []string) error {
+	list, err := core.ListBackups()
+	if err != nil {
+		return err
+	}
+	if len(list) == 0 {
+		return fmt.Errorf("no backups to restore")
+	}
+	b := list[0]
+	fmt.Printf("restoring backup %s (%s/%s, %d file(s))\n",
+		b.ID, b.Provider, b.PresetID, len(b.Files))
+	if err := b.Restore(); err != nil {
+		return err
+	}
+	fmt.Println("done")
+	return nil
+}
+
+func cmdBackups(args []string) error {
+	list, err := core.ListBackups()
+	if err != nil {
+		return err
+	}
+	if len(list) == 0 {
+		fmt.Println("no backups")
+		return nil
+	}
+	for _, b := range list {
+		fmt.Printf("%s  %-10s %-12s %2d file(s)\n",
+			b.ID, b.Provider, b.PresetID, len(b.Files))
+	}
+	return nil
+}
+
+func cmdPlugin(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("plugin requires a subcommand: list | show <id>")
+	}
+	loader := engine.NewLoader()
+	switch args[0] {
+	case "list":
+		for _, s := range loader.List() {
+			origin := "user"
+			if s.Builtin {
+				origin = "builtin"
+			}
+			fmt.Printf("%-12s %-8s %s\n", s.ID, origin, s.Path)
+		}
+		return nil
+	case "show":
+		if len(args) < 2 {
+			return fmt.Errorf("plugin show requires an id")
+		}
+		p, _, err := loader.LoadOne(args[1])
+		if err != nil {
+			return err
+		}
+		defer p.Close()
+		fmt.Printf("id        %s\n", p.ID())
+		fmt.Printf("title     %s\n", p.Title())
+		fmt.Printf("category  %s\n", p.Category())
+		fmt.Printf("platforms %v\n", p.Platforms())
+		fmt.Printf("detects   %v\n", p.Detects())
+		fmt.Printf("envs      %v\n", p.Envs())
+		fmt.Printf("presets\n")
+		for _, pr := range p.Presets() {
+			fmt.Printf("  %-12s %s\n", pr.ID, pr.Label)
+		}
+		fmt.Printf("settings\n")
+		for _, s := range p.Settings() {
+			fmt.Printf("  %-14s %-8s %s\n", s.Key, s.Type, s.Label)
+		}
+		return nil
+	default:
+		return fmt.Errorf("unknown plugin subcommand %q", args[0])
+	}
+}
+
+// ? helpers ?
+
+// reportBroken prints plugins that failed to load. Silent failure would make
+// a typo in a plugin invisible.
+func reportBroken(diag []engine.PluginSource) {
+	for _, d := range diag {
+		if d.Err != nil {
+			fmt.Fprintf(os.Stderr, "warning: plugin %s failed to load: %v\n", d.ID, d.Err)
+		}
+	}
+}
+
+// parseProvider extracts the provider id and flags from a command line.
+func parseProvider(args []string) (id, preset string, yes bool, err error) {
+	var rest []string
+	for _, a := range args {
+		switch {
+		case a == "--yes" || a == "-y":
+			yes = true
+		case strings.HasPrefix(a, "--preset="):
+			preset = strings.TrimPrefix(a, "--preset=")
+		case strings.HasPrefix(a, "--preset"):
+			preset = strings.TrimPrefix(a, "--preset ")
+		default:
+			rest = append(rest, a)
+		}
+	}
+	if len(rest) == 0 {
+		return "", "", yes, fmt.Errorf("a provider id is required")
+	}
+	return rest[0], preset, yes, nil
+}
+
+// presetOpts returns the options for a preset, or the first preset's options
+// when none was named.
+func presetOpts(p provider.Provider, preset string) map[string]any {
+	presets := p.Presets()
+	if len(presets) == 0 {
+		return map[string]any{}
+	}
+	if preset != "" {
+		if pr := provider.PresetByID(presets, preset); pr != nil {
+			return pr.Opts
+		}
+		return nil
+	}
+	return presets[0].Opts
+}
+
+// presetLabel returns the display label of a preset, or the first preset's
+// label when none was named.
+func presetLabel(p provider.Provider, preset string) string {
+	presets := p.Presets()
+	if len(presets) == 0 {
+		return "custom"
+	}
+	if preset != "" {
+		if pr := provider.PresetByID(presets, preset); pr != nil {
+			return pr.Label
+		}
+		return preset
+	}
+	return presets[0].Label
+}
+
+func categoryName(c provider.Category) string {
+	switch c {
+	case provider.CategoryLanguage:
+		return "语言"
+	case provider.CategoryContainer:
+		return "容器"
+	case provider.CategoryOS:
+		return "操作系统"
+	default:
+		return "工具"
+	}
+}
+
+func short(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n-1] + "…"
+}
+
+func backupID(b *core.Backup) string {
+	if b == nil {
+		return "none"
+	}
+	return b.ID
+}
+
+func confirm(prompt string) bool {
+	fmt.Printf("%s [y/N] ", prompt)
+	var answer string
+	fmt.Scanln(&answer)
+	return strings.HasPrefix(strings.ToLower(answer), "y")
+}
+
+func usage() {
+	fmt.Print(`km — mirror manager
+
+usage:
+  km                    open the TUI
+  km list               list providers and their status
+  km plan <id>          show what a preset would change
+  km apply <id>         apply a preset
+  km bench <id>         measure every preset endpoint
+  km undo               restore the most recent backup
+  km backups            list backups
+  km plugin list        list loaded plugins
+  km plugin show <id>   print a plugin's metadata
+
+flags for apply:
+  --preset=<id>         choose the preset (default: the first one)
+  --yes, -y             skip the confirmation prompt
+`)
+}
