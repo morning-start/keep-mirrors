@@ -121,11 +121,18 @@ return m, tea.Batch(
 只返回 poll，监听会在 1 秒后静默停止，症状是「改了不生效」，看起来像
 watcher 坏了而不是漏了一个返回值。`TestTickPollsAndRearms` 守这条。
 
-**2. 旧 provider 必须延迟一轮再 Close。**
+**2. 旧 provider 必须延迟一轮再 Close，且由 Reloader 负责。**
 
 `State.Close` 和 `State.CallMethod` 共用同一把互斥锁。重载当轮就 Close 会让
 一个正在跑的 `plan()` 把它阻塞在锁上——而它跑在 UI 线程，界面会卡到调用超时
-（10 秒）。所以用 `Retire()` 入队，下一次 `Poll` 才真正释放。
+（10 秒）。所以被替换的集合先入 retired 队列，下一次 `Poll` 才真正释放。
+
+「谁该退休」由 `Reloader` 自己轮转（`live` → `retired`），调用方**不要**再
+插手。曾经调用方拿到 `Poll()` 的返回值去 `Retire()`，而那正是**新**集合，
+于是下一次轮询把界面正在用的 provider 全关了——症状是「重载看起来成功了，
+一秒后所有插件报 plugin state is closed」，很容易误判成插件错误。
+
+启动时把初始集合交给 `Adopt()`，否则第一轮重载要替换的那份永远得不到释放。
 
 **3. 重载只能换指针，不能原地重载 `LState`。**
 
