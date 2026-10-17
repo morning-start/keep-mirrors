@@ -95,55 +95,13 @@ type Result struct {
 	Err  string
 }
 
-// Base carries the metadata common to most providers, so a concrete provider
-// only implements Status, Plan and (optionally) Benchmark.
-type Base struct {
-	IDv        string
-	Titlev     string
-	Categoryv  Category
-	PlatformsV []string
-	DetectsV   []string
-	EnvsV      []string
-	PresetsV   []Preset
-	SettingsV  []Setting
-}
-
-func (b Base) ID() string               { return b.IDv }
-func (b Base) Title() string            { return b.Titlev }
-func (b Base) Category() Category       { return b.Categoryv }
-func (b Base) Version() ContractVersion { return ContractVersion{Major: 1, Minor: 0} }
-func (b Base) Platforms() []string      { return b.PlatformsV }
-func (b Base) Detects() []string        { return b.DetectsV }
-func (b Base) Envs() []string           { return b.EnvsV }
-func (b Base) Presets() []Preset        { return b.PresetsV }
-func (b Base) Settings() []Setting      { return b.SettingsV }
-
-// Str coerces an opts value to a string, tolerating nil.
-func Str(v any) string {
-	if s, ok := v.(string); ok {
-		return s
-	}
-	return ""
-}
-
-// Bool coerces an opts value to a bool, tolerating nil.
-func Bool(v any) bool {
-	switch t := v.(type) {
-	case bool:
-		return t
-	case string:
-		return t == "true" || t == "1" || t == "yes"
-	}
-	return false
-}
-
-// Get returns opts[key] or the setting's default when absent.
-func Get(opts map[string]any, def map[string]any, key string) any {
-	if v, ok := opts[key]; ok && v != nil {
-		return v
-	}
-	if v, ok := def[key]; ok {
-		return v
+// PresetByID returns the preset with the given id, or nil. Declaration order
+// is preserved by the callers, so this is a lookup and never a re-sort.
+func PresetByID(ps []Preset, id string) *Preset {
+	for i := range ps {
+		if ps[i].ID == id {
+			return &ps[i]
+		}
 	}
 	return nil
 }

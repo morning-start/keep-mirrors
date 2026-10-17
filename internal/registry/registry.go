@@ -60,25 +60,6 @@ func (r *Registry) All() []provider.Provider {
 	return out
 }
 
-// IDs lists provider ids in stable order.
-func (r *Registry) IDs() []string {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	out := make([]string, 0, len(r.m))
-	for _, p := range r.All() {
-		out = append(out, p.ID())
-	}
-	sort.Strings(out)
-	return out
-}
-
-// Len returns the number of registered providers.
-func (r *Registry) Len() int {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	return len(r.m)
-}
-
 // ByCategory groups providers for the tree view.
 func (r *Registry) ByCategory() map[provider.Category][]provider.Provider {
 	out := map[provider.Category][]provider.Provider{}
