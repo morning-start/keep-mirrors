@@ -19,7 +19,6 @@
 package main
 
 import (
-	"embed"
 	"fmt"
 	"os"
 	"sort"
@@ -28,13 +27,18 @@ import (
 	"keep-mirrors/internal/app"
 	"keep-mirrors/internal/core"
 	"keep-mirrors/internal/engine"
+	"keep-mirrors/internal/plugins"
 	"keep-mirrors/internal/provider"
 	"keep-mirrors/internal/registry"
 	"keep-mirrors/internal/tui"
 )
 
-//go:embed all:plugins
-var builtinPlugins embed.FS
+// pluginSeed is the embedded snapshot the loader unpacks on first run.
+//
+// Plugins are read from disk at runtime, never from here. This snapshot only
+// fills official/ when it is empty, which keeps a fresh install usable offline
+// without turning the binary into a second source of truth.
+var pluginSeed = plugins.FS
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
@@ -44,7 +48,7 @@ func main() {
 }
 
 func run(args []string) error {
-	engine.BuiltinFS = builtinPlugins
+	engine.SetSeed(pluginSeed)
 
 	if len(args) == 0 {
 		return runTUI()
@@ -74,10 +78,25 @@ func run(args []string) error {
 	}
 }
 
+// newLoader builds a loader with the seed wired in and makes sure the official
+// directory exists.
+//
+// Seeding is idempotent and only fires when official/ is empty, so calling it
+// from every entry point is safe: a second run never overwrites a synced or
+// hand-edited plugin set.
+func newLoader() *engine.Loader {
+	loader := engine.NewLoader()
+	if n, err := loader.SeedIfEmpty(); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not seed plugins: %v\n", err)
+	} else if n > 0 {
+		fmt.Fprintf(os.Stderr, "seeded %d plugin(s) into %s\n", n, loader.OfficialPluginDir())
+	}
+	return loader
+}
+
 // loadRegistry compiles every plugin and builds the provider registry.
 func loadRegistry() (*registry.Registry, []engine.PluginSource, error) {
-	loader := engine.NewLoader()
-	provs, diag, err := loader.Load()
+	provs, diag, err := newLoader().Load()
 	if err != nil {
 		return nil, diag, err
 	}
@@ -303,19 +322,24 @@ func cmdBackups(args []string) error {
 
 func cmdPlugin(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("plugin requires a subcommand: list | show <id>")
+		return fmt.Errorf("plugin requires a subcommand: list | show <id> | dir")
 	}
-	loader := engine.NewLoader()
+	loader := newLoader()
 	switch args[0] {
+	case "dir":
+		// The directories are printed unconditionally, including ones that do
+		// not exist yet: telling a user where to put a plugin is more useful
+		// than reporting only what already exists.
+		fmt.Printf("official  %s\n", loader.OfficialPluginDir())
+		fmt.Printf("user      %s\n", loader.UserPluginDir())
+		return nil
+
 	case "list":
 		for _, s := range loader.List() {
-			origin := "user"
-			if s.Builtin {
-				origin = "builtin"
-			}
-			fmt.Printf("%-12s %-8s %s\n", s.ID, origin, s.Path)
+			fmt.Printf("%-12s %-9s %s\n", s.ID, s.Origin, s.Path)
 		}
 		return nil
+
 	case "show":
 		if len(args) < 2 {
 			return fmt.Errorf("plugin show requires an id")
@@ -325,24 +349,48 @@ func cmdPlugin(args []string) error {
 			return err
 		}
 		defer p.Close()
-		fmt.Printf("id        %s\n", p.ID())
-		fmt.Printf("title     %s\n", p.Title())
-		fmt.Printf("category  %s\n", p.Category())
-		fmt.Printf("platforms %v\n", p.Platforms())
-		fmt.Printf("detects   %v\n", p.Detects())
-		fmt.Printf("envs      %v\n", p.Envs())
-		fmt.Printf("presets\n")
+
+		m := p.Meta()
+		fmt.Printf("id          %s\n", p.ID())
+		fmt.Printf("title       %s\n", p.Title())
+		fmt.Printf("category    %s\n", p.Category())
+		fmt.Printf("version     %s\n", orDash(m.Version))
+		fmt.Printf("api         %d.%d\n", m.API.Major, m.API.Minor)
+		fmt.Printf("presets")
 		for _, pr := range p.Presets() {
-			fmt.Printf("  %-12s %s\n", pr.ID, pr.Label)
+			fmt.Printf(" %s", pr.ID)
 		}
-		fmt.Printf("settings\n")
+		fmt.Println()
+		fmt.Printf("settings")
 		for _, s := range p.Settings() {
-			fmt.Printf("  %-14s %-8s %s\n", s.Key, s.Type, s.Label)
+			fmt.Printf(" %s", s.Key)
 		}
+		fmt.Println()
+
+		// Everything below is supplementary: read when someone asks about a
+		// plugin, never while rendering the list.
+		fmt.Println()
+		fmt.Printf("author      %s\n", orDash(m.Author))
+		fmt.Printf("license     %s\n", orDash(m.License))
+		fmt.Printf("homepage    %s\n", orDash(m.Homepage))
+		fmt.Printf("description %s\n", orDash(m.Description))
+		fmt.Printf("platforms   %s\n", orDash(strings.Join(m.Platforms, " ")))
+		fmt.Printf("detects     %s\n", orDash(strings.Join(m.Detects, " ")))
+		fmt.Printf("envs        %s\n", orDash(strings.Join(m.Envs, " ")))
 		return nil
+
 	default:
 		return fmt.Errorf("unknown plugin subcommand %q", args[0])
 	}
+}
+
+// orDash renders an empty metadata field as "-" so the output columns line up
+// whether or not a plugin filled everything in.
+func orDash(s string) string {
+	if strings.TrimSpace(s) == "" {
+		return "-"
+	}
+	return s
 }
 
 // ── helpers ────────────────────────────────────────────────────────────

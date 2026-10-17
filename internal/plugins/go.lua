@@ -11,8 +11,13 @@ local M = {}
 
 M.api       = { major = 1, minor = 0 }
 M.id        = "go"
+M.version   = "1.0.0"
 M.title     = "Go"
 M.category  = "language"
+M.author    = "keep-mirrors"
+M.license   = "MIT"
+M.homepage  = "https://github.com/keep-mirrors/plugins/blob/main/go.lua"
+M.description = "GOPROXY 与 GOSUMDB，直接写 $GOENV 文件"
 M.platforms = { "windows", "linux", "darwin" }
 M.detects   = { "go" }
 M.envs      = { "GOPROXY", "GOSUMDB" }

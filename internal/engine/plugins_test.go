@@ -1,50 +1,84 @@
-package engine
+package engine_test
 
 import (
-	"os"
-	"path/filepath"
+	"io/fs"
 	"strings"
 	"testing"
+
+	"keep-mirrors/internal/engine"
+	"keep-mirrors/internal/plugins"
+	"keep-mirrors/internal/provider"
 )
 
-// TestBuiltinPluginsLoad runs every plugin shipped in plugins/ through the
-// same loader the binary uses. This is the test that keeps the Lua contract
-// and the Go bridge in sync: a plugin that stops compiling, or that changes
-// its field names, fails here rather than at runtime in front of the user.
-func TestBuiltinPluginsLoad(t *testing.T) {
-	entries, err := os.ReadDir(filepath.Join("..", "..", "plugins"))
+// seedNames returns the .lua files in the embedded seed snapshot.
+//
+// The test reads the same fs.FS the binary seeds from, not a path on disk.
+// That is the point: when the test read `../../plugins` while the binary read
+// its own embed copy, the two could drift and the suite stayed green while the
+// shipped behaviour was stale.
+func seedNames(t *testing.T) []string {
+	t.Helper()
+	entries, err := fs.ReadDir(plugins.FS, ".")
 	if err != nil {
-		t.Fatalf("read plugins dir: %v", err)
+		t.Fatalf("read seed: %v", err)
 	}
-	if len(entries) == 0 {
-		t.Fatal("no plugins found in plugins/")
-	}
-
-	seen := map[string]bool{}
+	var out []string
 	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".lua") {
-			continue
+		if !e.IsDir() && strings.HasSuffix(e.Name(), ".lua") {
+			out = append(out, e.Name())
 		}
-		id := strings.TrimSuffix(e.Name(), ".lua")
+	}
+	if len(out) == 0 {
+		t.Fatal("the seed snapshot contains no .lua files")
+	}
+	return out
+}
+
+func loadSeed(t *testing.T, name string) *engine.LuaProvider {
+	t.Helper()
+	body, err := fs.ReadFile(plugins.FS, name)
+	if err != nil {
+		t.Fatalf("read %s: %v", name, err)
+	}
+	p, _, err := engine.Load(string(body), engine.DefaultOptions())
+	if err != nil {
+		t.Fatalf("%s: Load: %v", name, err)
+	}
+	t.Cleanup(p.Close)
+	return p
+}
+
+// TestSeedPluginsLoad runs every curated plugin through the same loader the
+// binary uses. A plugin that stops compiling, or that changes its field names,
+// fails here rather than at runtime in front of the user.
+func TestSeedPluginsLoad(t *testing.T) {
+	seen := map[string]bool{}
+	for _, name := range seedNames(t) {
+		id := strings.TrimSuffix(name, ".lua")
 		t.Run(id, func(t *testing.T) {
-			body, err := os.ReadFile(filepath.Join("..", "..", "plugins", e.Name()))
-			if err != nil {
-				t.Fatalf("read: %v", err)
-			}
-			p, _, err := Load(string(body), DefaultOptions())
-			if err != nil {
-				t.Fatalf("Load: %v", err)
-			}
-			defer p.Close()
+			p := loadSeed(t, name)
 
 			if p.ID() != id {
-				t.Errorf("plugin file %q declares id %q", e.Name(), p.ID())
+				t.Errorf("file %q declares id %q", name, p.ID())
 			}
 			if seen[p.ID()] {
 				t.Errorf("duplicate plugin id %q", p.ID())
 			}
 			seen[p.ID()] = true
 
+			m := p.Meta()
+			if m.API.Major != engine.ContractMajor {
+				t.Errorf("api.major = %d, want %d", m.API.Major, engine.ContractMajor)
+			}
+			if m.Version == "" {
+				t.Error("version is empty; a distributed plugin needs its own release number")
+			}
+			if m.Author == "" || m.License == "" {
+				t.Errorf("author/license missing: author=%q license=%q", m.Author, m.License)
+			}
+			if m.Description == "" {
+				t.Error("description is empty")
+			}
 			if len(p.Presets()) == 0 {
 				t.Error("plugin declares no presets")
 			}
@@ -52,51 +86,29 @@ func TestBuiltinPluginsLoad(t *testing.T) {
 				t.Error("plugin declares no settings")
 			}
 
-			// status() must run without erroring, even when the toolchain
-			// the plugin manages is not installed on this machine.
 			st := p.Status(testCtx())
-			t.Logf("status: installed=%v current=%q note=%q",
-				st.Installed, st.Current, st.Note)
-			if st.Note != "" && strings.HasPrefix(st.Note, "status failed") {
+			t.Logf("status: installed=%v current=%q", st.Installed, st.Current)
+			if strings.HasPrefix(st.Note, "status failed") {
 				t.Errorf("status() errored: %s", st.Note)
 			}
 
-			// plan() must produce at least one change for the first preset,
-			// which is the path the UI exercises first.
-			if len(p.Presets()) > 0 {
-				plan, err := p.Plan(testCtx(), p.Presets()[0].Opts)
-				if err != nil {
-					t.Fatalf("Plan(%s): %v", p.Presets()[0].ID, err)
-				}
-				if plan.Empty() {
-					t.Errorf("preset %q produced an empty plan", p.Presets()[0].ID)
-				}
-				t.Logf("plan(%s): %s", p.Presets()[0].ID, plan.Summary())
+			plan, err := p.Plan(testCtx(), p.Presets()[0].Opts)
+			if err != nil {
+				t.Fatalf("Plan(%s): %v", p.Presets()[0].ID, err)
+			}
+			if plan.Empty() {
+				t.Errorf("preset %q produced an empty plan", p.Presets()[0].ID)
 			}
 		})
 	}
 }
 
-// TestBuiltinPluginsPlanOfficial checks the "restore the official source"
-// path, which is the one most likely to be wrong: it has to both clear the
-// variable and blank the config entry, or a stale value survives.
-func TestBuiltinPluginsPlanOfficial(t *testing.T) {
-	entries, err := os.ReadDir(filepath.Join("..", "..", "plugins"))
-	if err != nil {
-		t.Fatalf("read plugins dir: %v", err)
-	}
-	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".lua") {
-			continue
-		}
-		body, err := os.ReadFile(filepath.Join("..", "..", "plugins", e.Name()))
-		if err != nil {
-			t.Fatal(err)
-		}
-		p, _, err := Load(string(body), DefaultOptions())
-		if err != nil {
-			t.Fatalf("%s: Load: %v", e.Name(), err)
-		}
+// TestSeedPluginsPlanOfficial checks the "restore the official source" path,
+// which is the one most likely to be wrong: it has to both clear the variable
+// and blank the config entry, or a stale value survives.
+func TestSeedPluginsPlanOfficial(t *testing.T) {
+	for _, name := range seedNames(t) {
+		p := loadSeed(t, name)
 
 		var official map[string]any
 		for _, pr := range p.Presets() {
@@ -105,18 +117,24 @@ func TestBuiltinPluginsPlanOfficial(t *testing.T) {
 			}
 		}
 		if official == nil {
-			t.Logf("%s: no official preset, skipping", e.Name())
-			p.Close()
+			t.Logf("%s: no official preset, skipping", name)
 			continue
 		}
-
 		plan, err := p.Plan(testCtx(), official)
 		if err != nil {
-			t.Fatalf("%s: Plan(official): %v", e.Name(), err)
+			t.Fatalf("%s: Plan(official): %v", name, err)
 		}
 		if plan.Empty() {
-			t.Errorf("%s: official preset produced an empty plan", e.Name())
+			t.Errorf("%s: official preset produced an empty plan", name)
 		}
-		p.Close()
+	}
+}
+
+func testCtx() provider.Context {
+	return provider.Context{
+		Platform: "windows",
+		Home:     "C:\\Users\\test",
+		Shell:    "powershell",
+		Values:   map[string]any{},
 	}
 }

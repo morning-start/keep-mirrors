@@ -25,15 +25,12 @@ type fakeProvider struct {
 	benchCalls int
 }
 
-func (f *fakeProvider) ID() string                        { return f.id }
-func (f *fakeProvider) Title() string                     { return f.title }
-func (f *fakeProvider) Category() provider.Category       { return f.cat }
-func (f *fakeProvider) Version() provider.ContractVersion { return provider.ContractVersion{Major: 1} }
-func (f *fakeProvider) Platforms() []string               { return []string{"windows"} }
-func (f *fakeProvider) Detects() []string                 { return nil }
-func (f *fakeProvider) Envs() []string                    { return nil }
-func (f *fakeProvider) Presets() []provider.Preset        { return f.presets }
-func (f *fakeProvider) Settings() []provider.Setting      { return nil }
+func (f *fakeProvider) ID() string                   { return f.id }
+func (f *fakeProvider) Title() string                { return f.title }
+func (f *fakeProvider) Category() provider.Category  { return f.cat }
+func (f *fakeProvider) Meta() provider.Meta          { return provider.Meta{Version: "1.0.0"} }
+func (f *fakeProvider) Presets() []provider.Preset   { return f.presets }
+func (f *fakeProvider) Settings() []provider.Setting { return nil }
 
 func (f *fakeProvider) Status(provider.Context) provider.Status { return f.status }
 

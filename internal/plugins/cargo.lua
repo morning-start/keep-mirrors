@@ -19,8 +19,13 @@ local M = {}
 
 M.api       = { major = 1, minor = 0 }
 M.id        = "cargo"
+M.version   = "1.0.0"
 M.title     = "Rust / cargo"
 M.category  = "language"
+M.author    = "keep-mirrors"
+M.license   = "MIT"
+M.homepage  = "https://github.com/keep-mirrors/plugins/blob/main/cargo.lua"
+M.description = "cargo registry 镜像，三张表协同写入 config.toml"
 M.platforms = { "windows", "linux", "darwin" }
 M.detects   = { "cargo", "rustc" }
 M.envs      = { "CARGO_HTTP_MULTIPLEXING", "CARGO_HTTP_CHECK_REVOKE" }

@@ -88,8 +88,8 @@ func TestLoadMetadata(t *testing.T) {
 	if got := p.Title(); got != "Test" {
 		t.Errorf("Title() = %q", got)
 	}
-	if got := p.Version(); got.Major != 1 {
-		t.Errorf("Version().Major = %d", got.Major)
+	if got := p.Meta().API; got.Major != 1 {
+		t.Errorf("Meta().API.Major = %d", got.Major)
 	}
 	if len(p.Presets()) != 2 {
 		t.Errorf("Presets() = %d entries, want 2", len(p.Presets()))

@@ -20,14 +20,11 @@ type stub struct {
 	fail   bool
 }
 
-func (s *stub) ID() string                        { return s.id }
-func (s *stub) Title() string                     { return s.title }
-func (s *stub) Category() provider.Category       { return s.cat }
-func (s *stub) Version() provider.ContractVersion { return provider.ContractVersion{Major: 1} }
-func (s *stub) Platforms() []string               { return nil }
-func (s *stub) Detects() []string                 { return nil }
-func (s *stub) Envs() []string                    { return nil }
-func (s *stub) Settings() []provider.Setting      { return nil }
+func (s *stub) ID() string                   { return s.id }
+func (s *stub) Title() string                { return s.title }
+func (s *stub) Category() provider.Category  { return s.cat }
+func (s *stub) Meta() provider.Meta          { return provider.Meta{Version: "1.0.0"} }
+func (s *stub) Settings() []provider.Setting { return nil }
 
 func (s *stub) Presets() []provider.Preset {
 	return []provider.Preset{

@@ -29,6 +29,43 @@ type ContractVersion struct {
 	Minor int
 }
 
+// Meta is the supplementary metadata a plugin publishes about itself.
+//
+// It is deliberately kept off the Provider interface. The three identity
+// methods there (ID, Title, Category) are read while rendering the list, which
+// happens on every keystroke; the fields here are read when a user opens the
+// detail pane, lists what is installed, or reports a bug. Grouping them means
+// adding a field never churns the interface or every implementation of it.
+type Meta struct {
+	// Version is the plugin's own release, independent of API.
+	//
+	// The two move for different reasons and must not be conflated: changing
+	// a mirror URL bumps Version, while using a new km.* capability bumps
+	// API. Only API is a load-time gate.
+	Version string
+
+	// API is the contract version the plugin was written against.
+	API ContractVersion
+
+	// Author, License and Homepage are expected of anything distributed
+	// publicly. They exist so a bug report can find the plugin's origin.
+	Author   string
+	License  string
+	Homepage string
+
+	// Description is one line, shown in the detail pane.
+	Description string
+
+	// Platforms lists the GOOS values the plugin claims to support. Empty
+	// means "any"; it is advisory and does not gate loading.
+	Platforms []string
+	// Detects lists executables used to decide whether the toolchain is
+	// present. The UI reads it; the plugin makes the actual decision.
+	Detects []string
+	// Envs lists the environment variables the plugin may touch.
+	Envs []string
+}
+
 // Preset is a named, one-click configuration.
 type Preset struct {
 	ID    string
@@ -71,10 +108,9 @@ type Provider interface {
 	ID() string
 	Title() string
 	Category() Category
-	Version() ContractVersion
-	Platforms() []string
-	Detects() []string
-	Envs() []string
+	// Meta returns the supplementary metadata, read on demand rather than on
+	// every render.
+	Meta() Meta
 	Presets() []Preset
 	Settings() []Setting
 
@@ -93,6 +129,20 @@ type Result struct {
 	MS   int64
 	OK   bool
 	Err  string
+}
+
+// SupportsPlatform reports whether m claims to run on the given GOOS. An empty
+// Platforms list means the plugin did not say, which is treated as "any".
+func (m Meta) SupportsPlatform(goos string) bool {
+	if len(m.Platforms) == 0 {
+		return true
+	}
+	for _, p := range m.Platforms {
+		if p == goos {
+			return true
+		}
+	}
+	return false
 }
 
 // PresetByID returns the preset with the given id, or nil. Declaration order

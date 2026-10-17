@@ -6,8 +6,13 @@ local M = {}
 
 M.api       = { major = 1, minor = 0 }
 M.id        = "npm"
+M.version   = "1.0.0"
 M.title     = "Node.js / npm"
 M.category  = "language"
+M.author    = "keep-mirrors"
+M.license   = "MIT"
+M.homepage  = "https://github.com/keep-mirrors/plugins/blob/main/npm.lua"
+M.description = "npm registry，写入 .npmrc 并同步 npm_config_registry"
 M.platforms = { "windows", "linux", "darwin" }
 M.detects   = { "npm", "node" }
 M.envs      = { "npm_config_registry" }

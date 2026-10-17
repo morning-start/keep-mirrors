@@ -9,8 +9,13 @@ local M = {}
 
 M.api       = { major = 1, minor = 0 }
 M.id        = "pip"
+M.version   = "1.0.0"
 M.title     = "Python / pip"
 M.category  = "language"
+M.author    = "keep-mirrors"
+M.license   = "MIT"
+M.homepage  = "https://github.com/keep-mirrors/plugins/blob/main/pip.lua"
+M.description = "pip 的 index-url 与 trusted-host，写入 pip.conf 并同步 PIP_INDEX_URL"
 M.platforms = { "windows", "linux", "darwin" }
 M.detects   = { "python", "python3", "pip", "pip3" }
 M.envs      = { "PIP_INDEX_URL", "PIP_EXTRA_INDEX_URL" }

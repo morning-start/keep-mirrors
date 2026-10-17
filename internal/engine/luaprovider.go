@@ -34,21 +34,13 @@ type LuaProvider struct {
 	mod   *lua.LTable // the module table returned by the plugin
 	src   string      // plugin source, kept for reload diagnostics
 
-	meta      providerMeta
-	presets   []provider.Preset
-	settings  []provider.Setting
-	envs      []string
-	platforms []string
-	detects   []string
-}
+	id       string
+	title    string
+	category provider.Category
+	meta     provider.Meta
 
-// providerMeta is the declarative part of the module table.
-type providerMeta struct {
-	ID       string
-	Title    string
-	Category string
-	Major    int
-	Minor    int
+	presets  []provider.Preset
+	settings []provider.Setting
 }
 
 // Load compiles src in a fresh sandboxed state and reads the module table.
@@ -75,36 +67,48 @@ func Load(src string, opts Options) (*LuaProvider, *State, error) {
 	}
 	p.presets = readPresets(p.mod)
 	p.settings = readSettings(p.mod)
-	p.envs = readStrings(p.mod, "envs")
-	p.platforms = readStrings(p.mod, "platforms")
-	p.detects = readStrings(p.mod, "detects")
 	return p, st, nil
 }
 
 // readMeta pulls the identifying fields and validates the contract version.
 func (p *LuaProvider) readMeta(tbl *lua.LTable) error {
-	p.meta.ID = strOf(tbl, "id")
-	p.meta.Title = strOf(tbl, "title")
-	p.meta.Category = strOf(tbl, "category")
-	if p.meta.ID == "" {
+	p.id = strOf(tbl, "id")
+	p.title = strOf(tbl, "title")
+	cat := strOf(tbl, "category")
+
+	if p.id == "" {
 		return fmt.Errorf("plugin is missing id")
 	}
-	if p.meta.Title == "" {
-		p.meta.Title = p.meta.ID
+	if p.title == "" {
+		p.title = p.id
 	}
-	if p.meta.Category == "" {
-		p.meta.Category = string(provider.CategoryTool)
+	if cat == "" {
+		cat = string(provider.CategoryTool)
+	}
+	p.category = provider.Category(cat)
+
+	p.meta = provider.Meta{
+		Version:     strOf(tbl, "version"),
+		Author:      strOf(tbl, "author"),
+		License:     strOf(tbl, "license"),
+		Homepage:    strOf(tbl, "homepage"),
+		Description: strOf(tbl, "description"),
+		Platforms:   readStrings(tbl, "platforms"),
+		Detects:     readStrings(tbl, "detects"),
+		Envs:        readStrings(tbl, "envs"),
 	}
 	if api, ok := tbl.RawGetString("api").(*lua.LTable); ok {
-		p.meta.Major = int(lua.LVAsNumber(api.RawGetString("major")))
-		p.meta.Minor = int(lua.LVAsNumber(api.RawGetString("minor")))
+		p.meta.API = provider.ContractVersion{
+			Major: int(lua.LVAsNumber(api.RawGetString("major"))),
+			Minor: int(lua.LVAsNumber(api.RawGetString("minor"))),
+		}
 	}
-	if p.meta.Major == 0 {
-		p.meta.Major = 1
+	if p.meta.API.Major == 0 {
+		p.meta.API.Major = 1
 	}
-	if p.meta.Major != ContractMajor {
+	if p.meta.API.Major != ContractMajor {
 		return fmt.Errorf("plugin %q targets contract %d.x, this binary speaks %d.x",
-			p.meta.ID, p.meta.Major, ContractMajor)
+			p.id, p.meta.API.Major, ContractMajor)
 	}
 	return nil
 }
@@ -183,15 +187,10 @@ func readStrings(tbl *lua.LTable, key string) []string {
 
 // ── provider.Provider implementation ────────────────────────────────────
 
-func (p *LuaProvider) ID() string                  { return p.meta.ID }
-func (p *LuaProvider) Title() string               { return p.meta.Title }
-func (p *LuaProvider) Category() provider.Category { return provider.Category(p.meta.Category) }
-func (p *LuaProvider) Version() provider.ContractVersion {
-	return provider.ContractVersion{Major: p.meta.Major, Minor: p.meta.Minor}
-}
-func (p *LuaProvider) Platforms() []string          { return p.platforms }
-func (p *LuaProvider) Detects() []string            { return p.detects }
-func (p *LuaProvider) Envs() []string               { return p.envs }
+func (p *LuaProvider) ID() string                   { return p.id }
+func (p *LuaProvider) Title() string                { return p.title }
+func (p *LuaProvider) Category() provider.Category  { return p.category }
+func (p *LuaProvider) Meta() provider.Meta          { return p.meta }
 func (p *LuaProvider) Presets() []provider.Preset   { return p.presets }
 func (p *LuaProvider) Settings() []provider.Setting { return p.settings }
 
@@ -223,16 +222,16 @@ func (p *LuaProvider) Plan(ctx provider.Context, opts map[string]any) (*core.Pla
 	res, err := p.state.CallMethod(p.mod, "plan",
 		ctxTable(p.state.L, ctx), mapToTable(p.state.L, opts))
 	if err != nil {
-		return nil, fmt.Errorf("plugin %s plan(): %w", p.meta.ID, err)
+		return nil, fmt.Errorf("plugin %s plan(): %w", p.id, err)
 	}
 	if len(res) == 0 {
-		return nil, fmt.Errorf("plugin %s plan() returned nothing", p.meta.ID)
+		return nil, fmt.Errorf("plugin %s plan() returned nothing", p.id)
 	}
 	t, ok := res[0].(*lua.LTable)
 	if !ok {
-		return nil, fmt.Errorf("plugin %s plan() did not return a table", p.meta.ID)
+		return nil, fmt.Errorf("plugin %s plan() did not return a table", p.id)
 	}
-	return planFromTable(t, p.meta.ID)
+	return planFromTable(t, p.id)
 }
 
 // Benchmark calls the plugin's benchmark() when it exists.

@@ -20,6 +20,10 @@ import (
 // CARGO_HOME and GOENV are cleared rather than redirected: both are honoured
 // only when they point at an existing directory, so clearing them makes the
 // plugins fall back to ~/.cargo and ~/.config/go inside the sandbox.
+//
+// APPDATA is redirected too, which now also moves the plugin directories:
+// paths.AppDir is derived from it, so the loader seeds and reads plugins
+// inside the temp tree instead of the developer's real ones.
 func sandbox(t *testing.T) string {
 	t.Helper()
 	home := t.TempDir()
@@ -32,6 +36,10 @@ func sandbox(t *testing.T) string {
 	t.Setenv("GOPROXY", "")
 	paths.Reset()
 	t.Cleanup(paths.Reset)
+	// The tests call loadRegistry directly instead of going through run(), so
+	// the seed has to be installed here too. Doing it explicitly is what makes
+	// the seeding path part of what these tests cover.
+	engine.SetSeed(pluginSeed)
 	return home
 }
 
@@ -42,7 +50,9 @@ func sandbox(t *testing.T) string {
 func TestStatusReadBack(t *testing.T) {
 	home := sandbox(t)
 
-	engine.BuiltinFS = builtinPlugins
+	// loadRegistry goes through newLoader, which seeds the official directory
+	// from the embedded snapshot when it is empty. Inside the sandbox that is
+	// a fresh directory, so this also exercises the seed path end to end.
 	reg, diag, err := loadRegistry()
 	if err != nil {
 		t.Fatalf("loadRegistry: %v", err)
@@ -114,7 +124,6 @@ func TestStatusReadBack(t *testing.T) {
 func TestUndoRestoresEnv(t *testing.T) {
 	sandbox(t)
 
-	engine.BuiltinFS = builtinPlugins
 	reg, diag, err := loadRegistry()
 	if err != nil {
 		t.Fatalf("loadRegistry: %v", err)
