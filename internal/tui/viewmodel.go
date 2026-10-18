@@ -17,6 +17,10 @@ type ChangeView struct {
 	Name   string
 	Before string
 	After  string
+	// Diff carries the line-oriented diff of a config change, as produced by
+	// core.Diff: a file path line followed by "  - old" / "  + new" lines.
+	// It is nil for env changes, which render as one compact line.
+	Diff []string
 }
 
 // BenchView is a flattened benchmark row.
@@ -37,8 +41,14 @@ func changeViews(p *core.Plan) []ChangeView {
 	for _, c := range p.Changes {
 		v := ChangeView{Kind: string(c.Kind)}
 		switch c.Kind {
-		case core.ChangeConfig:
+		case core.ChangeConfig, core.ChangeConfigRemove:
 			v.File = shortPath(c.File)
+			// The same diff the headless `km plan` prints. The preview pane
+			// must show what will actually change — a bare file name made
+			// the user approve writes they could not see.
+			if d := core.Diff(c); d != "" {
+				v.Diff = strings.Split(d, "\n")
+			}
 		case core.ChangeEnv, core.ChangeEnvUnset:
 			v.Name = c.Name
 			v.Before = orUnset(c.Before)
