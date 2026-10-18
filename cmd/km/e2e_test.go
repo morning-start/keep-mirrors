@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"keep-mirrors/internal/app"
@@ -10,6 +11,7 @@ import (
 	"keep-mirrors/internal/engine"
 	"keep-mirrors/internal/env"
 	"keep-mirrors/internal/paths"
+	"keep-mirrors/internal/provider"
 	"keep-mirrors/internal/registry"
 )
 
@@ -206,6 +208,175 @@ func TestUndoRestoresEnv(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(paths.Home(), ".npmrc")); !os.IsNotExist(err) {
 		t.Error(".npmrc still exists after undo")
+	}
+}
+
+// TestOfficialPresetStripsTheBlock is the regression test for "restore the
+// official source" writing an empty value instead of removing the block.
+//
+// A blank `registry=` in .npmrc is not npm's default — npm reads it as an
+// invalid URL and every install fails with ERR_INVALID_URL (the same shape of
+// breakage existed for cargo's `replace-with = ”`). The correct restore is to
+// strip the managed block entirely, so the tool falls back to its own default.
+//
+// It also pins the read-back: with `+` instead of `*` in the Lua pattern, an
+// empty value failed to match on its own line and the capture ran on to the
+// tail sentinel, so status reported "# <<" as the configured value.
+func TestOfficialPresetStripsTheBlock(t *testing.T) {
+	sandbox(t)
+
+	reg, diag, err := loadRegistry()
+	if err != nil {
+		t.Fatalf("loadRegistry: %v", err)
+	}
+	reportBroken(diag)
+
+	cases := []struct {
+		id    string
+		file  string
+		label string
+	}{
+		{"npm", ".npmrc", "registry"},
+		{"pip", "pip/pip.conf", "index-url"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.id, func(t *testing.T) {
+			p, ok := reg.Get(tc.id)
+			if !ok {
+				t.Fatalf("provider %s not found", tc.id)
+			}
+			m := app.New(reg)
+			m.Cursor = indexOf(reg, tc.id)
+			target := filepath.Join(paths.Home(), filepath.FromSlash(tc.file))
+
+			// 1. Apply a real mirror: a managed block with a value appears.
+			opts, pid, err := resolvePreset(p, presetOtherThan(p, "official"))
+			if err != nil {
+				t.Fatalf("resolvePreset: %v", err)
+			}
+			plan, err := p.Plan(m.Ctx(), withPreset(opts, pid))
+			if err != nil {
+				t.Fatalf("Plan: %v", err)
+			}
+			if _, err := core.Apply(plan); err != nil {
+				t.Fatalf("Apply: %v", err)
+			}
+			if st := p.Status(m.Ctx()); st.Current == "" {
+				t.Fatalf("status after apply is empty; the block was not written")
+			}
+
+			// 2. Apply the official preset: the block must disappear.
+			opts, pid, err = resolvePreset(p, "official")
+			if err != nil {
+				t.Fatalf("resolvePreset(official): %v", err)
+			}
+			plan, err = p.Plan(m.Ctx(), withPreset(opts, pid))
+			if err != nil {
+				t.Fatalf("Plan(official): %v", err)
+			}
+			plan.PresetID = pid
+			if err := plan.Describe(); err != nil {
+				t.Fatalf("Describe: %v", err)
+			}
+			if _, err := core.Apply(plan); err != nil {
+				t.Fatalf("Apply(official): %v", err)
+			}
+
+			rest, err := os.ReadFile(target)
+			if err != nil {
+				t.Fatalf("read after restore: %v", err)
+			}
+			if strings.Contains(string(rest), "keep-mirrors") {
+				t.Errorf("the managed block survived the official preset:\n%s", rest)
+			}
+
+			// 3. status() must report unconfigured, never the tail sentinel.
+			st := p.Status(m.Ctx())
+			if st.Current != "" {
+				t.Errorf("status after restore = %q, want empty (a sentinel line here means the read-back ran past an empty value)", st.Current)
+			}
+
+			// 4. The whole cycle is idempotent: restoring twice is a no-op.
+			plan, err = p.Plan(m.Ctx(), withPreset(opts, pid))
+			if err != nil {
+				t.Fatalf("Plan(official) again: %v", err)
+			}
+			plan.PresetID = pid
+			if err := plan.Describe(); err != nil {
+				t.Fatalf("Describe: %v", err)
+			}
+			if !plan.Empty() {
+				t.Errorf("restoring an already-restored file still produced %d change(s)", plan.ChangeCount())
+			}
+			_ = tc.label
+		})
+	}
+}
+
+// presetOtherThan returns the id of the first preset that is not "official",
+// so the test applies a real mirror regardless of preset order.
+func presetOtherThan(p provider.Provider, avoid string) string {
+	for _, pr := range p.Presets() {
+		if pr.ID != avoid {
+			return pr.ID
+		}
+	}
+	return ""
+}
+
+// TestStatusReadsEmptyValueAsEmpty covers a config file a *user* hand-edits
+// into an empty value (the new restore path never writes one, but the block
+// may predate the fix or be pasted from an old tutorial).
+//
+// With `+` in the Lua read-back pattern, an empty value failed to match on its
+// own line and the capture ran past the newline onto the tail sentinel, so
+// status reported "# <<" as the configured value. `*` matches it as empty.
+func TestStatusReadsEmptyValueAsEmpty(t *testing.T) {
+	sandbox(t)
+
+	reg, diag, err := loadRegistry()
+	if err != nil {
+		t.Fatalf("loadRegistry: %v", err)
+	}
+	reportBroken(diag)
+
+	cases := []struct {
+		id    string
+		file  string
+		block string
+	}{
+		{"npm", ".npmrc", "# >>> keep-mirrors:npm >>>\nregistry=\n# <<< keep-mirrors:npm <<<\n"},
+		{"pip", "pip/pip.conf", "# >>> keep-mirrors:pip >>>\n[global]\nindex-url = \n# <<< keep-mirrors:pip <<<\n"},
+		{"go", ".config/go/env", "# >>> keep-mirrors:go >>>\nGOPROXY=\n# <<< keep-mirrors:go <<<\n"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.id, func(t *testing.T) {
+			p, ok := reg.Get(tc.id)
+			if !ok {
+				t.Fatalf("provider %s not found", tc.id)
+			}
+			m := app.New(reg)
+			m.Cursor = indexOf(reg, tc.id)
+
+			target := filepath.Join(paths.Home(), filepath.FromSlash(tc.file))
+			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(target, []byte(tc.block), 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			// Env can outrank the file; make sure it is silent so the test
+			// actually exercises the file read-back.
+			for _, v := range []string{"npm_config_registry", "PIP_INDEX_URL", "GOPROXY"} {
+				os.Unsetenv(v)
+			}
+
+			st := p.Status(m.Ctx())
+			if strings.Contains(st.Current, "#") || strings.Contains(st.Current, "<<<") {
+				t.Errorf("%s: status read-back = %q, captured the sentinel line instead of the empty value", tc.id, st.Current)
+			}
+		})
 	}
 }
 
