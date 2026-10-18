@@ -11,7 +11,7 @@ local M = {}
 
 M.api       = { major = 1, minor = 0 }
 M.id        = "go"
-M.version   = "1.0.0"
+M.version   = "1.1.0"
 M.title     = "Go"
 M.category  = "language"
 M.author    = "keep-mirrors"
@@ -85,7 +85,9 @@ local function current_proxy()
   if v then return v end
   local blk = current_entries(goenv_path())
   if blk then
-    local r = blk:match("GOPROXY%s*=%s*([^\n]+)")
+    -- `*` not `+`: an empty value must match as empty on its own line, or
+    -- the capture skips past the newline and grabs the tail sentinel.
+    local r = blk:match("GOPROXY[ \t]*=[ \t]*([^\n]*)")
     if r then return trim(r) end
   end
   return nil
@@ -119,15 +121,13 @@ function M.plan(ctx, opts)
   local changes = {}
 
   if proxy == "" then
+    -- Restore the official source: strip the managed block so go env falls
+    -- back to its defaults. A blank GOPROXY line would NOT be the default.
     table.insert(changes, {
-      kind   = "config",
+      kind   = "config-remove",
       file   = path,
       format = "hash",
-      syntax = "kv",
       block  = "go",
-      entries = {
-        { key = "GOPROXY", value = "https://proxy.golang.org,direct" },
-      },
     })
     return { changes = changes, warnings = {} }
   end
