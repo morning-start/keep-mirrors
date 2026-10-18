@@ -7,11 +7,16 @@ pip / npm / cargo / go / flutter 五个源都只是普通 Lua 文件——它们
 
 | id | 生态 | 写什么 |
 |---|---|---|
-| `pip` | Python | `pip.conf` 托管块 + `PIP_INDEX_URL` |
-| `npm` | Node.js | `.npmrc` 托管块 + `npm_config_registry` |
-| `cargo` | Rust | `.cargo/config.toml` 托管块（三张表协同） |
+| `pip` | Python | `pip.conf` 托管块 + `PIP_INDEX_URL`；装了 uv / pdm 时一并设 `UV_DEFAULT_INDEX` / `PDM_PYPI_URL` |
+| `npm` | Node.js | `.npmrc` 托管块 + `npm_config_registry`（pnpm 读同一份 `.npmrc`） |
+| `cargo` | Rust | `.cargo/config.toml` 托管块（三张表协同）+ rustup 的 `RUSTUP_DIST_SERVER` / `RUSTUP_UPDATE_ROOT` |
 | `go` | Go | `$GOENV` 托管块（`GOPROXY` / `GOSUMDB`） |
 | `flutter` | Flutter / Dart | `PUB_HOSTED_URL` + `FLUTTER_STORAGE_BASE_URL` |
+
+一个插件管的是一个**工具组**，不是单个命令：Python 有 pip / uv / pdm 三个互相
+不读对方配置的安装器，Rust 的 crate 和工具链来自两个不同的主机。选一次方案集，
+组内所有成员一起切换；组内某个工具没装就不给它写变量，装了但没对齐则
+`status()` 的 note 会说出来（详情页显示为 ⚠ 一行）。
 
 ## 为什么是 Lua 插件
 

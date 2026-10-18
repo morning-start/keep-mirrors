@@ -83,11 +83,38 @@ default is exactly the original configuration a user can fall back to.
 
 | id | ecosystem | what it writes |
 |---|---|---|
-| `pip` | Python / pip | `pip.conf` block + `PIP_INDEX_URL` |
-| `npm` | Node.js / npm | `.npmrc` block + `npm_config_registry` |
-| `cargo` | Rust / cargo | `.cargo/config.toml` block (three coordinated tables) |
+| `pip` | Python / pip + uv + pdm | `pip.conf` block + `PIP_INDEX_URL`, plus `UV_DEFAULT_INDEX` / `PDM_PYPI_URL` when those tools are on PATH |
+| `npm` | Node.js / npm + pnpm | `.npmrc` block + `npm_config_registry` (pnpm reads the same `.npmrc`) |
+| `cargo` | Rust / cargo + rustup | `.cargo/config.toml` block (three coordinated tables) + `RUSTUP_DIST_SERVER` / `RUSTUP_UPDATE_ROOT` |
 | `go` | Go | `$GOENV` block (`GOPROXY` / `GOSUMDB`) |
 | `flutter` | Flutter / Dart | `PUB_HOSTED_URL` + `FLUTTER_STORAGE_BASE_URL` only |
+
+## One plugin, several tools
+
+A plugin answers for a **tool group**, not a single binary. The reason is that a
+preset the user thinks of as "the Python mirror" does not exist: pip reads
+`pip.conf`, uv reads `UV_DEFAULT_INDEX`, pdm reads `PDM_PYPI_URL`, and none of
+them looks at the others. Configuring one of the three and calling it done
+leaves the other two quietly downloading from pypi.org.
+
+Two rules make the group safe:
+
+- **Write only to tools that exist.** `km.fs.which` gates each secondary
+  variable, so a machine that has never run uv does not end up with a dead
+  `UV_DEFAULT_INDEX` that nothing reads and that the settings screen cannot
+  explain.
+- **Say when the group is split.** The badge speaks for the primary tool
+  alone, so `status()` puts the disagreement in `note` ("uv 的索引与 pip 不
+  一致"), which the detail pane renders as a ⚠ line. A tool installed after
+  the last apply therefore announces itself instead of failing silently.
+
+`cargo` is the same shape across hosts rather than across binaries: crates come
+from the registry, compilers come from `static.rust-lang.org`, so the preset
+carries both and `status()` reports an empty-vs-set mismatch either way. The
+presence gate is `rustup`, not `cargo` — the variables are rustup's.
+
+`npm` gets pnpm for free: pnpm reads `.npmrc`, so there is nothing to write. Do
+not add a second managed block for a tool that already honours the first one.
 
 `flutter` is the shape a pure-env plugin takes: the tool has no config file at
 all, so `status()` must read the durable store with `km.env.persisted` rather
