@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"keep-mirrors/internal/fsutil"
 	"keep-mirrors/internal/paths"
 	"keep-mirrors/internal/plugins"
 )
@@ -109,18 +110,16 @@ func stateFromSeed() State {
 	}
 }
 
-// SaveState writes the state atomically enough for our purposes: a partial
-// write would only cause an extra download next time, never data loss.
+// SaveState writes the state atomically (tmp → fsync → rename), so a crash
+// mid-write cannot leave a torn file that would silently force a re-download
+// on the next run.
 func SaveState(st State) error {
-	if err := os.MkdirAll(paths.AppDir(), 0o755); err != nil {
-		return fmt.Errorf("create %s: %w", paths.AppDir(), err)
-	}
 	b, err := json.MarshalIndent(st, "", "  ")
 	if err != nil {
 		return err
 	}
 	b = append(b, '\n')
-	if err := os.WriteFile(statePath(), b, 0o644); err != nil {
+	if err := fsutil.WriteFile(statePath(), string(b), 0o644); err != nil {
 		return fmt.Errorf("write %s: %w", statePath(), err)
 	}
 	return nil

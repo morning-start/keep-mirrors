@@ -207,21 +207,35 @@ git tag v1.2.0 && git push origin master --tags
 
 按踩坑频率排序。每条都在代码注释里也写了。
 
-### 4.1 `%-` 不是转义，是惰性量词（最高频）
+### 4.1 `-` 是 pattern 的惰性量词；plain find 里 `%` 是字面量（最高频）
 
-Lua pattern 里 `%-` 表示「0 次或多次前一个字符」。写托管块查找时：
+两个容易混的语义，坑都出在混淆它们：
+
+- **Lua pattern 里**，`-` 是惰性量词，匹配字面连字符必须写 `%-`。
+  所以 `pip.lua` 的 `blk:match("index%-url...")` 是**对的**，别去「修」它。
+- **`find(..., true)`（plain find）**整个字符串按字面处理，`%` 就是 `%`。
+  写 `keep%-mirrors` 永远匹配不到——文件里没有 `%` 字符。
 
 ```lua
--- 错：静默永远匹配失败，症状是"写成功但 status() 读不回"
-body:find(">>> keep%-mirrors:pip >>>", 1, true)
+-- 对：pattern 里的 %- 是转义的字面连字符
+blk:match("index%-url%s*=%s*([^\n]*)")
 
--- 对
+-- 对：plain find 不需要转义
 body:find(">>> keep-mirrors:pip >>>", 1, true)
+
+-- 错：plain find 里写了 %，永远匹配失败，症状是"写成功但 status() 读不回"
+body:find(">>> keep%-mirrors:pip >>>", 1, true)
 ```
 
-`-` 在字符类外不是元字符，不需要转义。四个内置插件一开始全中。
+四个内置插件一开始全中。
 
-**只要你新增/修改任何 Lua 里的 `body:find`，就跑一次 apply → status 往返测试。**
+**只要你新增/修改任何 Lua 里的 `body:find` / `body:match`，就跑一次
+apply → status 往返测试。**
+
+**同族坑（更隐蔽，见架构文档 §6.7）**：读回模式里 `%s*=` 的 `%s` 包含
+换行——空值行上捕获组会跨行吃到 `# <<<` 哨兵，`status()` 把注释当成当前
+配置。等号两侧的空白用 `[ \t]*`，值用 `[^\n]*`，并用
+`TestStatusReadsEmptyValueAsEmpty` 守住空值路径。
 
 ### 4.2 Lua 局部函数必须先声明后使用
 

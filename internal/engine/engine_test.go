@@ -255,9 +255,11 @@ func TestSandboxConfinesSymlinkEscape(t *testing.T) {
 		t.Skipf("cannot create symlinks here: %v", err)
 	}
 
-	old := paths.Home()
 	paths.OverrideHome(home, filepath.Join(home, ".config"))
-	defer paths.OverrideHome(old, filepath.Join(old, ".config"))
+	// Reset, not OverrideHome(old, ...): OverrideHome cannot restore the
+	// original config root (paths does not expose it), and hard-coding
+	// old/.config would silently repoint later tests in this package.
+	defer paths.Reset()
 
 	st, err := New(DefaultOptions())
 	if err != nil {

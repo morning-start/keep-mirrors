@@ -97,6 +97,11 @@ func TestStatusReadBack(t *testing.T) {
 			t.Fatalf("%s: empty plan for the default preset", id)
 		}
 
+		// The plan's env changes go to the real registry, which the sandbox
+		// cannot redirect. Put whatever was there back afterwards.
+		saved := saveEnv(plan)
+		t.Cleanup(func() { restoreEnv(t, saved) })
+
 		if _, err := core.Apply(plan); err != nil {
 			t.Fatalf("%s: Apply: %v", id, err)
 		}
@@ -232,12 +237,11 @@ func TestOfficialPresetStripsTheBlock(t *testing.T) {
 	reportBroken(diag)
 
 	cases := []struct {
-		id    string
-		file  string
-		label string
+		id   string
+		file string
 	}{
-		{"npm", ".npmrc", "registry"},
-		{"pip", "pip/pip.conf", "index-url"},
+		{"npm", ".npmrc"},
+		{"pip", "pip/pip.conf"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.id, func(t *testing.T) {
@@ -249,12 +253,25 @@ func TestOfficialPresetStripsTheBlock(t *testing.T) {
 			m.Cursor = indexOf(reg, tc.id)
 			target := filepath.Join(paths.Home(), filepath.FromSlash(tc.file))
 
-			// 1. Apply a real mirror: a managed block with a value appears.
-			opts, pid, err := resolvePreset(p, presetOtherThan(p, "official"))
+			// Both applies below carry env changes that go to the real
+			// registry (the sandbox cannot redirect HKCU). Put whatever was
+			// there back afterwards — the official preset in particular
+			// deletes npm_config_registry, which is the user's own value.
+			opts0, pid0, err := resolvePreset(p, presetOtherThan(p, "official"))
 			if err != nil {
 				t.Fatalf("resolvePreset: %v", err)
 			}
-			plan, err := p.Plan(m.Ctx(), withPreset(opts, pid))
+			saved := saveEnv(func() *core.Plan {
+				pl, err := p.Plan(m.Ctx(), withPreset(opts0, pid0))
+				if err != nil {
+					t.Fatalf("Plan: %v", err)
+				}
+				return pl
+			}())
+			t.Cleanup(func() { restoreEnv(t, saved) })
+
+			// 1. Apply a real mirror: a managed block with a value appears.
+			plan, err := p.Plan(m.Ctx(), withPreset(opts0, pid0))
 			if err != nil {
 				t.Fatalf("Plan: %v", err)
 			}
@@ -266,7 +283,7 @@ func TestOfficialPresetStripsTheBlock(t *testing.T) {
 			}
 
 			// 2. Apply the official preset: the block must disappear.
-			opts, pid, err = resolvePreset(p, "official")
+			opts, pid, err := resolvePreset(p, "official")
 			if err != nil {
 				t.Fatalf("resolvePreset(official): %v", err)
 			}
@@ -308,7 +325,6 @@ func TestOfficialPresetStripsTheBlock(t *testing.T) {
 			if !plan.Empty() {
 				t.Errorf("restoring an already-restored file still produced %d change(s)", plan.ChangeCount())
 			}
-			_ = tc.label
 		})
 	}
 }
@@ -387,4 +403,48 @@ func indexOf(reg *registry.Registry, id string) int {
 		}
 	}
 	return 0
+}
+
+// envSnapshot is one persisted environment variable captured before a test
+// applies env changes. The registry cannot be sandboxed (AGENTS.md 4.6), so
+// without this every `go test ./cmd/km` run rewrites the developer's real
+// HKCU values — and an official-preset apply deletes them outright.
+type envSnapshot struct {
+	name  string
+	value string
+}
+
+// saveEnv captures the persisted values of every variable a plan would touch.
+func saveEnv(p *core.Plan) []envSnapshot {
+	var out []envSnapshot
+	seen := map[string]bool{}
+	for _, c := range p.Changes {
+		if c.Kind != core.ChangeEnv && c.Kind != core.ChangeEnvUnset {
+			continue
+		}
+		if seen[c.Name] {
+			continue
+		}
+		seen[c.Name] = true
+		v, _ := env.Read(c.Name)
+		out = append(out, envSnapshot{name: c.Name, value: v})
+	}
+	return out
+}
+
+// restoreEnv puts the captured values back. An empty captured value means the
+// variable was absent before, so it is deleted rather than set to "".
+func restoreEnv(t *testing.T, saved []envSnapshot) {
+	t.Helper()
+	for _, s := range saved {
+		if s.value == "" {
+			if err := env.Delete(s.name); err != nil {
+				t.Errorf("restore env %s: %v", s.name, err)
+			}
+			continue
+		}
+		if err := env.Write(s.name, s.value); err != nil {
+			t.Errorf("restore env %s: %v", s.name, err)
+		}
+	}
 }
