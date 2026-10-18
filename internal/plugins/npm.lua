@@ -6,7 +6,7 @@ local M = {}
 
 M.api       = { major = 1, minor = 0 }
 M.id        = "npm"
-M.version   = "1.1.0"
+M.version   = "1.2.0"
 M.title     = "Node.js / npm"
 M.category  = "language"
 M.author    = "keep-mirrors"
@@ -24,6 +24,9 @@ M.presets = {
     opts = { registry = "https://mirrors.cloud.tencent.com/npm/" } },
   { id = "huawei",    label = "华为云",
     opts = { registry = "https://repo.huaweicloud.com/repository/npm/" } },
+  -- nrm 也收录的 cnpm 源：cnpmcore 集群分钟级同步 npmjs，2026-10 验证存活。
+  { id = "cnpm",      label = "cnpm（npmmirror 团队）",
+    opts = { registry = "https://r.cnpmjs.org/" } },
   { id = "official",  label = "官方源",
     note = "registry.npmjs.org",
     opts = { registry = "" } },
