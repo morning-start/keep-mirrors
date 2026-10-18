@@ -310,6 +310,14 @@ func renderDetail(m *app.Model, width, height int) string {
 		b.WriteString(styleLabel.Render("  当前  ") + styleMuted.Render("<未配置>"))
 		b.WriteString("\n")
 	}
+	if st.Note != "" {
+		// Status notes were invisible until now: a provider could report
+		// "status failed: ..." or a half-applied group and the detail pane
+		// showed nothing. The note is the only channel a plugin has for
+		// "configured, but not the way you think".
+		b.WriteString(styleWarn.Render("  ⚠ " + truncate(st.Note, width-8)))
+		b.WriteString("\n")
+	}
 	if !st.Installed {
 		b.WriteString(styleWarn.Render("  ⚠ 未检测到对应工具链"))
 		b.WriteString("\n")

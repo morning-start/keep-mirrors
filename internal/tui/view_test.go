@@ -105,6 +105,27 @@ func TestViewShowsConfiguredBadge(t *testing.T) {
 	}
 }
 
+// TestViewShowsStatusNote is the regression test for a silently dropped
+// channel: plugins report "configured, but not the way you think" (a group
+// whose uv half never landed, a status() that threw) through Status.Note, and
+// the detail pane used to render none of it.
+func TestViewShowsStatusNote(t *testing.T) {
+	p := &stub{
+		id: "pip", title: "Pip", cat: provider.CategoryLanguage,
+		status: provider.Status{
+			Installed: true,
+			Current:   "https://a.invalid",
+			Note:      "uv 的索引与 pip 不一致",
+		},
+	}
+	m := newModel(t, p)
+
+	out := View(m, false, false, "")
+	if !strings.Contains(out, "uv 的索引与 pip 不一致") {
+		t.Errorf("Status.Note is not shown:\n%s", out)
+	}
+}
+
 // TestViewRendersFilterPrompt checks the status bar switches to the filter
 // prompt while the user is typing.
 func TestViewRendersFilterPrompt(t *testing.T) {
