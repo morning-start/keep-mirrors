@@ -155,7 +155,11 @@ jobs:
           version="${GITHUB_REF_NAME#v}"
           extra=""
           case "$version" in *-*) extra="--prerelease" ;; esac
+          # --repo is not optional here: this job has no checkout, and without
+          # a git remote gh fails with "not a git repository" instead of
+          # inferring the repository from the environment.
           gh release create "$GITHUB_REF_NAME" dist/* \
+            --repo "$GITHUB_REPOSITORY" \
             --verify-tag \
             --title "keep-mirrors $version" \
             --generate-notes \
