@@ -50,6 +50,7 @@ M.presets = {
       registry = "sparse+https://mirrors.tuna.tsinghua.edu.cn/crates.io-index/",
     } },
   { id = "official", label = "官方源",
+    note = "crates.io",
     opts = { index = "", registry = "" } },
 }
 

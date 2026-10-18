@@ -32,6 +32,7 @@ M.presets = {
   { id = "huawei",   label = "华为云",
     opts = { index = "https://repo.huaweicloud.com/repository/pypi/simple" } },
   { id = "official", label = "官方源",
+    note = "pypi.org",
     opts = { index = "" } },
 }
 

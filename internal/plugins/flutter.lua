@@ -43,6 +43,7 @@ M.presets = {
       pub     = "https://mirror.sjtu.edu.cn/dart-pub",
     } },
   { id = "official", label = "官方源",
+    note = "pub.dev + storage.googleapis.com",
     opts = { storage = "", pub = "" } },
 }
 
