@@ -37,39 +37,60 @@ func tickCmd(d time.Duration) tea.Cmd {
 
 // Key bindings. Kept in one table so the help text and the handler cannot
 // drift apart.
+//
+// Every binding takes its canonical key first (arrow keys, enter, esc) and
+// keeps the vim-style letter as an alias. The canonical key is what a first
+// time user tries; the alias is muscle memory for people who already have it.
+// The help screen shows both, but the status-bar hint leads with the arrow
+// keys so nobody has to guess that j/k is the movement mechanism.
 type key struct {
-	key    string
+	keys   []string
 	desc   string
 	action func(m *app.Model)
 }
 
+// pageSize is how far page-up/page-down travel. The list is short (one row per
+// plugin), so a full screen would fly past the end; ten rows is roughly what
+// fits and still feels like a page.
+const pageSize = 10
+
 var keys = []key{
-	{"j", "下移", func(m *app.Model) { m.Move(1); m.RefreshSelection() }},
-	{"k", "上移", func(m *app.Model) { m.Move(-1); m.RefreshSelection() }},
-	{"g", "顶部", func(m *app.Model) { m.MoveTo(0); m.RefreshSelection() }},
-	{"G", "底部", func(m *app.Model) { m.MoveTo(m.Count() - 1); m.RefreshSelection() }},
-	{"p", "方案集", cyclePreset},
-	{"a", "应用", func(m *app.Model) { _ = m.Apply() }},
-	{"u", "撤销", func(m *app.Model) { _ = m.Undo() }},
-	{"r", "刷新", func(m *app.Model) { m.RefreshPlan() }},
-	{"q", "退出", func(m *app.Model) { m.Quit = true }},
+	{[]string{"down", "j"}, "下移", func(m *app.Model) { m.Move(1); m.RefreshSelection() }},
+	{[]string{"up", "k"}, "上移", func(m *app.Model) { m.Move(-1); m.RefreshSelection() }},
+	{[]string{"home", "g"}, "顶部", func(m *app.Model) { m.MoveTo(0); m.RefreshSelection() }},
+	{[]string{"end", "G"}, "底部", func(m *app.Model) { m.MoveTo(m.Count() - 1); m.RefreshSelection() }},
+	{[]string{"pgdown"}, "下翻页", func(m *app.Model) { m.Move(pageSize); m.RefreshSelection() }},
+	{[]string{"pgup"}, "上翻页", func(m *app.Model) { m.Move(-pageSize); m.RefreshSelection() }},
+	{[]string{"left", "h"}, "上一方案集", func(m *app.Model) { cyclePreset(m, -1) }},
+	{[]string{"right", "l"}, "下一方案集", func(m *app.Model) { cyclePreset(m, 1) }},
+	{[]string{"p"}, "方案集", func(m *app.Model) { cyclePreset(m, 1) }},
+	{[]string{"enter", "a"}, "应用", func(m *app.Model) { _ = m.Apply() }},
+	{[]string{"ctrl+z", "u"}, "撤销", func(m *app.Model) { _ = m.Undo() }},
+	{[]string{"r"}, "刷新", func(m *app.Model) { m.RefreshPlan() }},
+	{[]string{"q"}, "退出", func(m *app.Model) { m.Quit = true }},
 }
 
-// cyclePreset advances the selected provider to its next preset.
-func cyclePreset(m *app.Model) {
+// cyclePreset advances the selected provider's preset by delta, wrapping.
+// Going "left" on the first preset wraps to the last, which is what makes the
+// arrow keys feel symmetric instead of dead-ending.
+func cyclePreset(m *app.Model, delta int) {
 	p := m.Selected()
 	if p == nil || len(p.Presets()) == 0 {
 		return
 	}
-	curl := m.Presets[p.ID()]
-	next := p.Presets()[0].ID
-	for i, pr := range p.Presets() {
-		if pr.ID == curl {
-			next = p.Presets()[(i+1)%len(p.Presets())].ID
-			break
+	presets := p.Presets()
+	idx := 0
+	if cur := m.Presets[p.ID()]; cur != "" {
+		for i, pr := range presets {
+			if pr.ID == cur {
+				idx = i
+				break
+			}
 		}
 	}
-	m.SelectPreset(p, next)
+	n := len(presets)
+	next := ((idx+delta)%n + n) % n
+	m.SelectPreset(p, presets[next].ID)
 }
 
 // Model is the bubbletea model. It wraps app.Model, which owns the state, so
@@ -158,7 +179,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		for _, k := range keys {
-			if k.key == s {
+			if hasKey(k.keys, s) {
 				k.action(m.app)
 				if m.app.Quit {
 					return m, tea.Quit
@@ -168,6 +189,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 	return m, nil
+}
+
+// hasKey reports whether s matches any of the binding's key names.
+func hasKey(names []string, s string) bool {
+	for _, n := range names {
+		if n == s {
+			return true
+		}
+	}
+	return false
 }
 
 // updateFilter handles keys while the filter prompt is open.
@@ -195,11 +226,14 @@ func (m Model) updateFilter(s string) (tea.Model, tea.Cmd) {
 			m.filterDraft = string(r[:len(r)-1])
 		}
 		return m, nil
-	}
-	// A single printable character extends the draft; control keys are ignored
+	} // A single printable character extends the draft; control keys are ignored
 	// rather than inserted as their escape sequence.
-	if len(s) == 1 && s[0] >= 0x20 {
-		m.filterDraft += s
+	//
+	// Counted in runes, not bytes: a Chinese character is one keystroke but
+	// three bytes, so a len(s)==1 test silently swallowed every CJK entry and
+	// made the filter look broken to anyone typing in Chinese.
+	if r := []rune(s); len(r) == 1 && r[0] >= 0x20 && r[0] != 0x7f {
+		m.filterDraft += string(r)
 	}
 	return m, nil
 }
@@ -213,14 +247,69 @@ func (m Model) View() string {
 }
 
 // renderHelp draws the key reference.
+//
+// The canonical key is printed large and the aliases follow in parentheses, so
+// the first column answers "what do I press" for a new user rather than
+// advertising vim bindings as if they were the interface.
 func renderHelp() string {
 	var b strings.Builder
 	b.WriteString("  keep-mirrors 快捷键\n\n")
 	for _, k := range keys {
-		b.WriteString(fmt.Sprintf("  %-4s %s\n", k.key, k.desc))
+		b.WriteString(fmt.Sprintf("  %-14s %s\n", formatKeys(k.keys), k.desc))
 	}
-	b.WriteString("\n  t   测速\n  /   过滤\n  ?   本页\n  esc 关闭\n\n  按任意键返回")
+	b.WriteString(fmt.Sprintf("  %-14s %s\n", "t", "测速"))
+	b.WriteString(fmt.Sprintf("  %-14s %s\n", "/", "过滤"))
+	b.WriteString(fmt.Sprintf("  %-14s %s\n", "?", "本页"))
+	b.WriteString(fmt.Sprintf("  %-14s %s\n", "esc", "关闭"))
+	b.WriteString("\n  方向键即可上下移动；j/k 等字母键同样可用。\n\n  按任意键返回")
 	return b.String()
+}
+
+// formatKeys renders a binding's key list: the canonical key first, aliases in
+// parentheses.
+func formatKeys(names []string) string {
+	if len(names) == 0 {
+		return ""
+	}
+	head := keyLabel(names[0])
+	if len(names) == 1 {
+		return head
+	}
+	aliases := make([]string, 0, len(names)-1)
+	for _, n := range names[1:] {
+		aliases = append(aliases, keyLabel(n))
+	}
+	return head + " (" + strings.Join(aliases, ", ") + ")"
+}
+
+// keyLabel makes bubbletea's key names readable. "pgdown" is not a label; "PgDn"
+// is.
+func keyLabel(name string) string {
+	switch name {
+	case "up":
+		return "↑"
+	case "down":
+		return "↓"
+	case "left":
+		return "←"
+	case "right":
+		return "→"
+	case "pgup":
+		return "PgUp"
+	case "pgdown":
+		return "PgDn"
+	case "home":
+		return "Home"
+	case "end":
+		return "End"
+	case "enter":
+		return "Enter"
+	case "ctrl+z":
+		return "Ctrl+Z"
+	case "esc":
+		return "Esc"
+	}
+	return name
 }
 
 // Run starts the interactive program. poll may be nil to disable hot reload.

@@ -115,7 +115,7 @@ section-aware 的结构化改写（且必定先备份）。
 | `engine` | gopher-lua 沙箱、`km.*` 绑定、加载器 | 每个插件独立 `LState`；调用串行化；带 deadline |
 | `registry` | 已加载插件的集合 | 同名 id 后者胜出（user 覆盖 official） |
 | `app` | 状态机 | TUI 与 CLI 共用；所有文件访问都经由 provider |
-| `tui` | 渲染与按键 | 纯函数，不碰文件系统 |
+| `tui` | 渲染与按键 | 纯函数，不碰文件系统；每个动作以规范键（方向键 / Enter / Esc）为主，vim 字母键只作别名 |
 
 ---
 

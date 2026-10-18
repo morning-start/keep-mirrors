@@ -296,7 +296,7 @@ func renderBar(m *app.Model, width int) string {
 			left = fmt.Sprintf("%s · 无需更改", m.PresetLabel(p))
 		}
 	}
-	hint := styleMuted.Render("j/k 移动 · p 方案集 · a 应用 · t 测速 · u 撤销 · ? 帮助 · q 退出")
+	hint := styleMuted.Render("↑↓ 选择 · ←→ 方案集 · Enter 应用 · t 测速 · Ctrl+Z 撤销 · ? 帮助 · q 退出")
 	bar := lipgloss.JoinHorizontal(lipgloss.Center, left, strings.Repeat(" ", maxInt(1, width-lipgloss.Width(left)-lipgloss.Width(hint))), hint)
 	return styleBar.Width(width).Render(bar)
 }

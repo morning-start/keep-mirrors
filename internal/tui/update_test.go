@@ -1,6 +1,9 @@
 package tui
 
 import (
+	"fmt"
+	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -95,6 +98,227 @@ func TestReloadedMsgReachesTheModel(t *testing.T) {
 		t.Error("the reload message did not reach the application model")
 	}
 	_ = next
+}
+
+// TestArrowKeysMoveTheCursor is the regression test for an interface that only
+// answered to vim bindings. A first-time user presses the arrow keys; if
+// nothing happens they have to open the help screen to discover that "j" is
+// what they wanted. The arrow keys and the vim aliases must both move the
+// cursor to the same place.
+func TestArrowKeysMoveTheCursor(t *testing.T) {
+	cases := []struct {
+		name    string
+		downKey tea.KeyType
+		downStr string
+		upKey   tea.KeyType
+		upStr   string
+	}{
+		{"arrows", tea.KeyDown, "", tea.KeyUp, ""},
+		{"vim aliases", 0, "j", 0, "k"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			am := newModel(t,
+				&stub{id: "pip", title: "Pip", cat: provider.CategoryLanguage},
+				&stub{id: "npm", title: "Npm", cat: provider.CategoryLanguage},
+			)
+			m := New(am, nil)
+			if am.Cursor != 0 {
+				t.Fatalf("cursor starts at %d, want 0", am.Cursor)
+			}
+
+			next, _ := m.Update(keyMsg(tc.downKey, tc.downStr))
+			nm := next.(Model)
+			if nm.app.Cursor != 1 {
+				t.Errorf("cursor = %d after the down key, want 1", nm.app.Cursor)
+			}
+
+			next, _ = nm.Update(keyMsg(tc.upKey, tc.upStr))
+			nm = next.(Model)
+			if nm.app.Cursor != 0 {
+				t.Errorf("cursor = %d after the up key, want 0", nm.app.Cursor)
+			}
+		})
+	}
+}
+
+// TestHomeEndJumpToEnds covers the "go to top/bottom" keys, which used to be
+// vim-only (g/G) and unreachable for everyone else.
+func TestHomeEndJumpToEnds(t *testing.T) {
+	am := newModel(t,
+		&stub{id: "a", title: "A", cat: provider.CategoryLanguage},
+		&stub{id: "b", title: "B", cat: provider.CategoryLanguage},
+		&stub{id: "c", title: "C", cat: provider.CategoryLanguage},
+	)
+	m := New(am, nil)
+
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnd})
+	nm := next.(Model)
+	if nm.app.Cursor != 2 {
+		t.Errorf("cursor = %d after End, want the last row (2)", nm.app.Cursor)
+	}
+
+	next, _ = nm.Update(tea.KeyMsg{Type: tea.KeyHome})
+	nm = next.(Model)
+	if nm.app.Cursor != 0 {
+		t.Errorf("cursor = %d after Home, want 0", nm.app.Cursor)
+	}
+}
+
+// TestPageKeysMoveByAPage keeps PgUp/PgDn from being dead keys and from
+// overshooting: they travel a bounded number of rows, then clamp at the end
+// like every other movement.
+func TestPageKeysMoveByAPage(t *testing.T) {
+	t.Run("longer than a page", func(t *testing.T) {
+		var stubs []provider.Provider
+		for i := 0; i < pageSize*2; i++ {
+			id := fmt.Sprintf("p%02d", i)
+			stubs = append(stubs, &stub{id: id, title: id, cat: provider.CategoryLanguage})
+		}
+		am := newModel(t, stubs...)
+		m := New(am, nil)
+
+		next, _ := m.Update(tea.KeyMsg{Type: tea.KeyPgDown})
+		nm := next.(Model)
+		if nm.app.Cursor != pageSize {
+			t.Errorf("cursor = %d after PgDn, want %d", nm.app.Cursor, pageSize)
+		}
+
+		next, _ = nm.Update(tea.KeyMsg{Type: tea.KeyPgUp})
+		nm = next.(Model)
+		if nm.app.Cursor != 0 {
+			t.Errorf("cursor = %d after PgUp, want 0", nm.app.Cursor)
+		}
+	})
+
+	t.Run("shorter than a page", func(t *testing.T) {
+		var stubs []provider.Provider
+		for _, id := range []string{"a", "b", "c", "d"} {
+			stubs = append(stubs, &stub{id: id, title: id, cat: provider.CategoryLanguage})
+		}
+		am := newModel(t, stubs...)
+		m := New(am, nil)
+
+		next, _ := m.Update(tea.KeyMsg{Type: tea.KeyPgDown})
+		nm := next.(Model)
+		if nm.app.Cursor != 3 {
+			t.Errorf("cursor = %d after PgDn on a 4-row list, want it clamped to 3", nm.app.Cursor)
+		}
+	})
+}
+
+// TestLeftRightCyclePresets checks that the horizontal arrows (and the p
+// binding) all advance the preset, and that cycling wraps in both directions
+// instead of dead-ending on the first or last entry.
+func TestLeftRightCyclePresets(t *testing.T) {
+	am := newModel(t, &stub{id: "pip", title: "Pip", cat: provider.CategoryLanguage})
+	m := New(am, nil)
+
+	// The stub declares tuna then official, and tuna is the default.
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRight})
+	nm := next.(Model)
+	if got := nm.app.Presets["pip"]; got != "official" {
+		t.Fatalf("preset after right = %q, want official", got)
+	}
+
+	next, _ = nm.Update(tea.KeyMsg{Type: tea.KeyRight})
+	nm = next.(Model)
+	if got := nm.app.Presets["pip"]; got != "tuna" {
+		t.Errorf("preset wrapped to %q, want tuna (right at the end should wrap)", got)
+	}
+
+	next, _ = nm.Update(tea.KeyMsg{Type: tea.KeyLeft})
+	nm = next.(Model)
+	if got := nm.app.Presets["pip"]; got != "official" {
+		t.Errorf("preset after left = %q, want official (left at the start should wrap)", got)
+	}
+}
+
+// TestEnterAppliesAndCtrlZUndoes pins the canonical keys for the two actions
+// that change the machine, on top of the letter aliases.
+func TestEnterAppliesAndCtrlZUndoes(t *testing.T) {
+	am := newModel(t, &stub{id: "pip", title: "Pip", cat: provider.CategoryLanguage})
+	m := New(am, nil)
+
+	// The stub's plan sets an environment variable, which reaches the real
+	// registry on Windows; capture and restore it.
+	before, hadBefore := os.LookupEnv("TEST_INDEX")
+	t.Cleanup(func() {
+		if hadBefore {
+			os.Setenv("TEST_INDEX", before)
+		} else {
+			os.Unsetenv("TEST_INDEX")
+		}
+	})
+
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	nm := next.(Model)
+	if nm.app.Plan != nil && !nm.app.Plan.Empty() {
+		t.Error("enter left the plan unapplied")
+	}
+	if !strings.HasPrefix(nm.app.StatusMsg, "applied") {
+		t.Errorf("status after enter = %q, want an applied message", nm.app.StatusMsg)
+	}
+
+	next, _ = nm.Update(tea.KeyMsg{Type: tea.KeyCtrlZ})
+	nm = next.(Model)
+	if !strings.HasPrefix(nm.app.StatusMsg, "restored") {
+		t.Errorf("status after ctrl+z = %q, want a restored message", nm.app.StatusMsg)
+	}
+}
+
+// TestFilterAcceptsMultibyteInput is the regression test for a filter that only
+// accepted single-byte characters: Chinese is three bytes per character, so a
+// len(s)==1 test dropped every keystroke and the prompt looked frozen.
+func TestFilterAcceptsMultibyteInput(t *testing.T) {
+	am := newModel(t, &stub{id: "pip", title: "Pip", cat: provider.CategoryLanguage})
+	m := New(am, nil)
+	m.filtering = true
+
+	for _, ch := range []string{"p", "y", "通"} {
+		next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(ch)})
+		m = next.(Model)
+	}
+	if m.filterDraft != "py通" {
+		t.Errorf("filter draft = %q, want %q", m.filterDraft, "py通")
+	}
+
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyBackspace})
+	m = next.(Model)
+	if m.filterDraft != "py" {
+		t.Errorf("draft after backspace = %q, want %q", m.filterDraft, "py")
+	}
+
+	// A control key must not insert its escape sequence.
+	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyUp})
+	m = next.(Model)
+	if m.filterDraft != "py" {
+		t.Errorf("draft = %q after an arrow key, want it unchanged", m.filterDraft)
+	}
+}
+
+// keyMsg builds the key message a real terminal sends. bubbletea reports
+// arrows and friends by KeyType with an empty string, and letters by runes.
+func keyMsg(t tea.KeyType, s string) tea.KeyMsg {
+	if s != "" {
+		return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(s)}
+	}
+	return tea.KeyMsg{Type: t}
+}
+
+// TestHelpLeadsWithArrowKeys guards the documentation half of the same problem:
+// the help screen is where a confused user goes, so it must present the
+// canonical keys, not advertise j/k as the interface.
+func TestHelpLeadsWithArrowKeys(t *testing.T) {
+	help := renderHelp()
+	for _, want := range []string{"↓", "↑", "Enter", "Ctrl+Z"} {
+		if !strings.Contains(help, want) {
+			t.Errorf("help screen does not mention %q", want)
+		}
+	}
+	if strings.Contains(help, "  j  ") {
+		t.Error("help screen still presents j as a primary key")
+	}
 }
 
 // TestCtrlCQuitsWhileFiltering is the regression test for a key that could trap
