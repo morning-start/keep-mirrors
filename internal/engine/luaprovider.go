@@ -129,6 +129,7 @@ func readPresets(tbl *lua.LTable) []provider.Preset {
 		out = append(out, provider.Preset{
 			ID:    strOf(pt, "id"),
 			Label: strOf(pt, "label"),
+			Note:  strOf(pt, "note"),
 			Opts:  tableToMap(pt.RawGetString("opts")),
 		})
 	})

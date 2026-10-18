@@ -29,7 +29,7 @@ func (s *stub) Settings() []provider.Setting { return nil }
 func (s *stub) Presets() []provider.Preset {
 	return []provider.Preset{
 		{ID: "tuna", Label: "Tuna", Opts: map[string]any{"index": "https://a.invalid"}},
-		{ID: "official", Label: "Official", Opts: map[string]any{"index": "https://b.invalid"}},
+		{ID: "official", Label: "Official", Note: "pypi.org", Opts: map[string]any{"index": "https://b.invalid"}},
 	}
 }
 
@@ -81,7 +81,7 @@ func TestViewSurvivesFailedPlan(t *testing.T) {
 		t.Fatal("expected PlanErr to be recorded")
 	}
 
-	out := View(m, false, "") // must not panic
+	out := View(m, false, false, "") // must not panic
 	if !strings.Contains(out, "plan exploded") {
 		t.Errorf("the plan error is not shown to the user:\n%s", out)
 	}
@@ -96,7 +96,7 @@ func TestViewShowsConfiguredBadge(t *testing.T) {
 	}
 	m := newModel(t, p)
 
-	out := View(m, false, "")
+	out := View(m, false, false, "")
 	if !strings.Contains(out, "已配置") {
 		t.Errorf("a configured provider is not shown as configured:\n%s", out)
 	}
@@ -111,7 +111,7 @@ func TestViewRendersFilterPrompt(t *testing.T) {
 	p := &stub{id: "pip", title: "Pip", cat: provider.CategoryLanguage}
 	m := newModel(t, p)
 
-	out := View(m, true, "pi")
+	out := View(m, false, true, "pi")
 	if !strings.Contains(out, "pi") {
 		t.Errorf("the filter draft is not rendered:\n%s", out)
 	}

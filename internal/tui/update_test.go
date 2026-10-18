@@ -8,9 +8,11 @@ import (
 	"time"
 
 	"keep-mirrors/internal/app"
+	"keep-mirrors/internal/env"
 	"keep-mirrors/internal/provider"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/ansi"
 )
 
 // TestInitArmsThePollTimer checks that hot reload starts at all: without this
@@ -234,36 +236,142 @@ func TestLeftRightCyclePresets(t *testing.T) {
 	}
 }
 
-// TestEnterAppliesAndCtrlZUndoes pins the canonical keys for the two actions
-// that change the machine, on top of the letter aliases.
-func TestEnterAppliesAndCtrlZUndoes(t *testing.T) {
-	am := newModel(t, &stub{id: "pip", title: "Pip", cat: provider.CategoryLanguage})
-	m := New(am, nil)
-
-	// The stub's plan sets an environment variable, which reaches the real
-	// registry on Windows; capture and restore it.
-	before, hadBefore := os.LookupEnv("TEST_INDEX")
+// cleanTestEnv clears TEST_INDEX (persisted and process) and restores whatever
+// was there when the test ends.
+//
+// The stub plan writes this variable, and Windows cannot sandbox HKCU, so a
+// test that dies between write and undo would leak the value into every later
+// run — where Before == After makes the plan empty and the flow untestable.
+// Starting clean breaks that cascade; the cleanup keeps the machine whole.
+func cleanTestEnv(t *testing.T) {
+	t.Helper()
+	saved, _ := env.Read("TEST_INDEX")
+	proc, hadProc := os.LookupEnv("TEST_INDEX")
 	t.Cleanup(func() {
-		if hadBefore {
-			os.Setenv("TEST_INDEX", before)
+		if saved == "" {
+			_ = env.Delete("TEST_INDEX")
+		} else {
+			_ = env.Write("TEST_INDEX", saved)
+		}
+		if hadProc {
+			os.Setenv("TEST_INDEX", proc)
 		} else {
 			os.Unsetenv("TEST_INDEX")
 		}
 	})
+	_ = env.Delete("TEST_INDEX")
+}
 
+// TestEnterStagesThenConfirmApplies pins the three-step apply: the first
+// Enter stages (opens the confirmation panel, writes nothing), a second Enter
+// confirms, and Ctrl+Z still rolls the confirmed write back.
+//
+// Before staging existed the first Enter wrote to disk directly — one
+// accidental keypress on the keyboard next to the navigation keys was enough
+// to modify the user's configuration.
+func TestEnterStagesThenConfirmApplies(t *testing.T) {
+	am := newModel(t, &stub{id: "pip", title: "Pip", cat: provider.CategoryLanguage})
+	cleanTestEnv(t)
+	m := New(am, nil)
+
+	// 1. First Enter: stage only. The variable must still be unset.
 	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	nm := next.(Model)
-	if nm.app.Plan != nil && !nm.app.Plan.Empty() {
-		t.Error("enter left the plan unapplied")
+	if !nm.confirming {
+		t.Fatal("the first Enter did not open the confirmation panel")
 	}
-	if !strings.HasPrefix(nm.app.StatusMsg, "applied") {
-		t.Errorf("status after enter = %q, want an applied message", nm.app.StatusMsg)
+	if os.Getenv("TEST_INDEX") != "" {
+		t.Fatal("the first Enter already wrote the configuration")
 	}
 
+	// 2. While staged, navigation keys are swallowed: the diff on screen must
+	// not change out from under the Enter that will confirm it.
+	next, _ = nm.Update(tea.KeyMsg{Type: tea.KeyDown})
+	nm = next.(Model)
+	if !nm.confirming {
+		t.Fatal("a navigation key dismissed the confirmation panel")
+	}
+	if am.Cursor != 0 {
+		t.Error("a navigation key moved the cursor while staged")
+	}
+
+	// 3. Second Enter: confirm and write.
+	next, _ = nm.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	nm = next.(Model)
+	if nm.confirming {
+		t.Error("confirming stayed on after the write")
+	}
+	if os.Getenv("TEST_INDEX") == "" {
+		t.Error("the confirmed Enter did not write the configuration")
+	}
+	if !strings.HasPrefix(nm.app.StatusMsg, "applied") {
+		t.Errorf("status after confirm = %q, want an applied message", nm.app.StatusMsg)
+	}
+
+	// 4. Ctrl+Z still rolls it back.
 	next, _ = nm.Update(tea.KeyMsg{Type: tea.KeyCtrlZ})
 	nm = next.(Model)
 	if !strings.HasPrefix(nm.app.StatusMsg, "restored") {
 		t.Errorf("status after ctrl+z = %q, want a restored message", nm.app.StatusMsg)
+	}
+}
+
+// TestEscCancelsStagedPlan checks the way out: cancelling leaves the plan
+// pending but writes nothing, and says so in plain words rather than an error.
+func TestEscCancelsStagedPlan(t *testing.T) {
+	am := newModel(t, &stub{id: "pip", title: "Pip", cat: provider.CategoryLanguage})
+	cleanTestEnv(t)
+	m := New(am, nil)
+
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	nm := next.(Model)
+
+	next, _ = nm.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	nm = next.(Model)
+	if nm.confirming {
+		t.Error("esc did not leave the confirmation panel")
+	}
+	if os.Getenv("TEST_INDEX") != "" {
+		t.Error("esc wrote the configuration")
+	}
+	if !strings.Contains(nm.app.StatusMsg, "已取消") {
+		t.Errorf("status after esc = %q, want a cancellation notice", nm.app.StatusMsg)
+	}
+}
+
+// TestOKeyStagesOfficialRevert checks the dedicated way back: o selects the
+// official preset and stages it, so reverting is one deliberate keypress plus
+// one confirmation instead of cycling the picker.
+func TestOKeyStagesOfficialRevert(t *testing.T) {
+	am := newModel(t, &stub{id: "pip", title: "Pip", cat: provider.CategoryLanguage})
+	cleanTestEnv(t)
+	m := New(am, nil)
+
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("o")})
+	nm := next.(Model)
+	if got := nm.app.Presets["pip"]; got != "official" {
+		t.Fatalf("preset after o = %q, want official", got)
+	}
+	if !nm.confirming {
+		t.Fatal("o did not stage the official plan")
+	}
+
+	// Cancelling leaves the official preset selected but nothing written.
+	next, _ = nm.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	nm = next.(Model)
+	if nm.app.Presets["pip"] != "official" {
+		t.Error("cancelling reset the preset selection")
+	}
+}
+
+// TestPresetNoteShown checks the official default is named where the user is
+// looking: the preset picker renders each preset's note.
+func TestPresetNoteShown(t *testing.T) {
+	am := newModel(t, &stub{id: "pip", title: "Pip", cat: provider.CategoryLanguage})
+	m := New(am, nil)
+
+	if out := ansi.Strip(View(m.app, false, false, "")); !strings.Contains(out, "pypi.org") {
+		t.Errorf("the official preset's note is not shown:\n%s", out)
 	}
 }
 

@@ -71,6 +71,10 @@ type Preset struct {
 	ID    string
 	Label string
 	Opts  map[string]any
+	// Note is an optional one-liner shown beside the preset — the official
+	// preset uses it to name the built-in default (e.g. "pypi.org"), which is
+	// what tells a user where "restore the official source" actually points.
+	Note string
 }
 
 // Setting describes one editable option. The UI renders a control from this

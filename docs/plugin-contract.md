@@ -73,6 +73,12 @@ M.settings = {
 **Preset declaration order matters**: the first preset is the default when the
 user never touches the picker. Do not sort presets by id.
 
+**Every preset may carry a `note`** — one muted line rendered beside it in the
+picker and in the confirmation panel. The official preset is expected to set it
+to the built-in default it restores to ("pypi.org", "registry.npmjs.org", …):
+"restore the official source" must say where it restores to, and the official
+default is exactly the original configuration a user can fall back to.
+
 ## Sources shipped today
 
 | id | ecosystem | what it writes |

@@ -30,6 +30,7 @@ M.presets = {
   { id = "goproxy.io", label = "goproxy.io",
     opts = { proxy = "https://goproxy.io" } },
   { id = "official",   label = "官方源",
+    note = "proxy.golang.org",
     opts = { proxy = "" } },
 }
 

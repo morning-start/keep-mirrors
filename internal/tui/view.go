@@ -84,9 +84,10 @@ var (
 
 // ── rendering ──────────────────────────────────────────────────────────
 
-// View renders the whole screen. filtering/draft drive the filter prompt that
-// replaces the status bar while the user is typing.
-func View(m *app.Model, filtering bool, draft string) string {
+// View renders the whole screen. confirming marks a staged plan (the detail
+// pane becomes the confirmation panel); filtering/draft drive the filter prompt
+// that replaces the status bar while the user is typing.
+func View(m *app.Model, confirming, filtering bool, draft string) string {
 	if m.Quit {
 		return ""
 	}
@@ -110,7 +111,12 @@ func View(m *app.Model, filtering bool, draft string) string {
 	bodyH := h - 1 // the status bar occupies the last line
 
 	left := renderList(m, listW, bodyH)
-	right := renderDetail(m, detailW, bodyH)
+	var right string
+	if confirming {
+		right = renderConfirm(m, detailW, bodyH)
+	} else {
+		right = renderDetail(m, detailW, bodyH)
+	}
 
 	// Pad both panes to the same height so the status bar sits on a clean
 	// boundary rather than mid-content.
@@ -121,7 +127,7 @@ func View(m *app.Model, filtering bool, draft string) string {
 	if filtering {
 		return row + "\n" + renderFilterBar(draft, w)
 	}
-	return row + "\n" + renderBar(m, w)
+	return row + "\n" + renderBar(m, w, confirming)
 }
 
 // renderFilterBar draws the filter prompt in the status bar. The content is
@@ -213,6 +219,61 @@ func padEnd(s string, n int) string {
 	return s
 }
 
+// renderConfirm draws the staged-plan panel: what will be written, for which
+// source, and where the official default lies. This is the second of the three
+// apply steps (preview → stage → confirm); nothing has touched the disk yet.
+func renderConfirm(m *app.Model, width, height int) string {
+	p := m.Selected()
+	if p == nil {
+		return styleMuted.Render("no provider selected")
+	}
+
+	var b strings.Builder
+
+	head := styleWarn.Render("⚠ 确认应用") + styleHead.Render(
+		" — "+p.Title()+" / "+m.PresetLabel(p))
+	b.WriteString(truncate(head, width))
+	b.WriteString("\n")
+
+	// The preset's note names the official default when the user is looking
+	// at the official preset — "restore official" must say where it restores
+	// to, not just that it restores.
+	if pr := provider.PresetByID(p.Presets(), m.SelectedPresetID(p)); pr != nil && pr.Note != "" {
+		b.WriteString(styleLabel.Render("  官方默认  ") + styleMuted.Render(pr.Note))
+		b.WriteString("\n")
+	}
+
+	b.WriteString("\n")
+	b.WriteString(styleLabel.Render("  将写入以下内容"))
+	b.WriteString("\n")
+	if m.PlanErr != nil {
+		b.WriteString(styleErr.Render("  " + truncate(m.PlanErr.Error(), width-6)))
+		b.WriteString("\n")
+	} else if m.Plan == nil || m.Plan.Empty() {
+		b.WriteString(styleMuted.Render("  (没有待应用的更改)"))
+		b.WriteString("\n")
+	} else {
+		for _, c := range changeViews(m.Plan) {
+			for _, l := range renderChange(c, width-6) {
+				b.WriteString("  " + l)
+				b.WriteString("\n")
+			}
+		}
+	}
+
+	if m.Plan != nil {
+		for _, w := range m.Plan.Warnings {
+			b.WriteString(styleWarn.Render("  ⚠ " + truncate(w, width-8)))
+			b.WriteString("\n")
+		}
+	}
+
+	b.WriteString("\n")
+	b.WriteString(styleOK.Render("  Enter 确认写入") + styleMuted.Render("    Esc 取消，不写入任何配置"))
+	b.WriteString("\n")
+	return b.String()
+}
+
 // renderDetail draws the selected provider's status, presets and diff.
 func renderDetail(m *app.Model, width, height int) string {
 	p := m.Selected()
@@ -239,6 +300,12 @@ func renderDetail(m *app.Model, width, height int) string {
 	if st.Current != "" {
 		b.WriteString(styleLabel.Render("  当前  ") + styleValue.Render(truncate(st.Current, width-14)))
 		b.WriteString("\n")
+		// The official default is the answer to "how do I go back": name it
+		// while the mirror is active, not only after the user hunts for it.
+		if pr := provider.PresetByID(p.Presets(), "official"); pr != nil && pr.Note != "" {
+			b.WriteString(styleLabel.Render("  官方默认  ") + styleMuted.Render(truncate(pr.Note, width-16)))
+			b.WriteString("\n")
+		}
 	} else {
 		b.WriteString(styleLabel.Render("  当前  ") + styleMuted.Render("<未配置>"))
 		b.WriteString("\n")
@@ -259,7 +326,14 @@ func renderDetail(m *app.Model, width, height int) string {
 			marker = "(●)"
 			s = s.Foreground(colorAccent).Bold(true)
 		}
-		b.WriteString(s.Render("  " + marker + " " + truncate(pr.Label, width-10)))
+		row := s.Render("  " + marker + " " + truncate(pr.Label, width-10))
+		if pr.Note != "" {
+			// The note rides along muted, so "( ) 官方源" also says where it
+			// points (pypi.org, registry.npmjs.org, …) without expanding the
+			// picker into a manual.
+			row += styleMuted.Render("  — " + truncate(pr.Note, maxInt(6, width-16-lipgloss.Width(pr.Label))))
+		}
+		b.WriteString(row)
 		b.WriteString("\n")
 	}
 
@@ -369,9 +443,13 @@ const barSlack = 12
 // pushed the whole frame down a line on every render. Note the content is
 // built to width-2 because styleBar's horizontal padding is added on top of
 // the joined text — filling the full width wrapped the last two columns.
-func renderBar(m *app.Model, width int) string {
+func renderBar(m *app.Model, width int, confirming bool) string {
 	left := ""
-	if m.StatusMsg != "" {
+	if confirming {
+		// The staged state has its own footer; a stale status message here
+		// would sit next to the confirmation keys and confuse both.
+		left = styleWarn.Render("已暂存，等待确认")
+	} else if m.StatusMsg != "" {
 		s := m.StatusMsg
 		if m.StatusErr {
 			left = styleErr.Render(s)
@@ -393,9 +471,12 @@ func renderBar(m *app.Model, width int) string {
 		}
 	}
 
-	// The long hint deliberately omits t/q — the hint is a reminder of the
-	// five keys a first session needs, not the manual; ? covers the rest.
-	hint := styleMuted.Render("↑↓ 选择 · ←→ 方案集 · Enter 应用 · Ctrl+Z 撤销 · ? 帮助")
+	// The hint swaps for the confirmation keys while a plan is staged — that
+	// is the one moment the next Enter writes to disk, so the bar must say so.
+	hint := styleMuted.Render("↑↓ 选择 · ←→ 方案集 · Enter 暂存 · Ctrl+Z 撤销 · ? 帮助")
+	if confirming {
+		hint = styleOK.Render("Enter 确认写入 · Esc 取消")
+	}
 	if lipgloss.Width(left)+lipgloss.Width(hint)+2+barSlack > width {
 		hint = styleMuted.Render("? 帮助 · q 退出")
 	}

@@ -97,7 +97,7 @@ func TestViewLayoutOverWidths(t *testing.T) {
 			selectProvider(am, "go")
 			am.RefreshSelection()
 
-			out := View(am, false, "")
+			out := View(am, false, false, "")
 			lines := strings.Split(out, "\n")
 			if len(lines) != height {
 				t.Errorf("frame is %d lines, want %d (the status bar wrapped)", len(lines), height)
@@ -156,7 +156,7 @@ func TestViewPreviewShowsConfigDiff(t *testing.T) {
 		t.Fatalf("selected = %s, want stubpip (cursor %d)", got, am.Cursor)
 	}
 
-	out := ansi.Strip(View(am, false, ""))
+	out := ansi.Strip(View(am, false, false, ""))
 	if !strings.Contains(out, "index-url = https://old.invalid") {
 		t.Errorf("the old value is not shown:\n%s", out)
 	}
@@ -184,7 +184,7 @@ func TestHighlightMatchesSelectedProvider(t *testing.T) {
 		t.Fatalf("selected = %v, want go", want)
 	}
 
-	for _, line := range strings.Split(View(am, false, ""), "\n") {
+	for _, line := range strings.Split(View(am, false, false, ""), "\n") {
 		if strings.Contains(line, "48;5;24") { // styleItemSel's background
 			got := ansi.Strip(line)
 			if !strings.Contains(got, "Go") {

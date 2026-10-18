@@ -25,6 +25,7 @@ M.presets = {
   { id = "huawei",    label = "华为云",
     opts = { registry = "https://repo.huaweicloud.com/repository/npm/" } },
   { id = "official",  label = "官方源",
+    note = "registry.npmjs.org",
     opts = { registry = "" } },
 }
 

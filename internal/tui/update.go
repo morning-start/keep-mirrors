@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"keep-mirrors/internal/app"
+	"keep-mirrors/internal/provider"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -64,7 +65,6 @@ var keys = []key{
 	{[]string{"left", "h"}, "上一方案集", func(m *app.Model) { cyclePreset(m, -1) }},
 	{[]string{"right", "l"}, "下一方案集", func(m *app.Model) { cyclePreset(m, 1) }},
 	{[]string{"p"}, "方案集", func(m *app.Model) { cyclePreset(m, 1) }},
-	{[]string{"enter", "a"}, "应用", func(m *app.Model) { _ = m.Apply() }},
 	{[]string{"ctrl+z", "u"}, "撤销", func(m *app.Model) { _ = m.Undo() }},
 	{[]string{"r"}, "刷新", func(m *app.Model) { m.RefreshPlan() }},
 	{[]string{"q"}, "退出", func(m *app.Model) { m.Quit = true }},
@@ -96,9 +96,12 @@ func cyclePreset(m *app.Model, delta int) {
 // Model is the bubbletea model. It wraps app.Model, which owns the state, so
 // this file contains only message plumbing.
 type Model struct {
-	app           *app.Model
-	poll          PollFunc
-	help          bool
+	app  *app.Model
+	poll PollFunc
+	help bool
+	// confirming marks a staged plan: the diff is on screen and nothing has
+	// been written. Only Enter/y and Esc/n leave this state.
+	confirming    bool
 	filtering     bool
 	filterDraft   string
 	width, height int
@@ -157,6 +160,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
+		// While the confirmation panel is open the plan is staged: every key
+		// except the ones that confirm or cancel is swallowed, so a stray
+		// ↓ or Enter typed while reading the diff cannot write anything.
+		if m.confirming {
+			return m.updateConfirm(s)
+		}
+
 		// While the filter prompt is open every keystroke edits the filter
 		// instead of triggering a binding, so "t" types a "t".
 		if m.filtering {
@@ -176,6 +186,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case "t":
 			return m, m.app.RunBenchmark()
+		case "enter", "a":
+			// Nothing is written here. Staging opens the confirmation panel
+			// with the full diff; only a second explicit Enter applies.
+			return m.stagePlan()
+		case "o":
+			return m.stageOfficial()
 		}
 
 		for _, k := range keys {
@@ -188,6 +204,64 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 	}
+	return m, nil
+}
+
+// stagePlan opens the confirmation panel for the pending plan. Staging is the
+// whole safety story: the first Enter must never write, because on a keyboard
+// the confirm key and the navigation keys are neighbours.
+func (m Model) stagePlan() (tea.Model, tea.Cmd) {
+	if m.app.Plan == nil || m.app.Plan.Empty() {
+		m.app.StatusMsg = "已是当前配置，无需更改"
+		m.app.StatusErr = false
+		return m, nil
+	}
+	m.confirming = true
+	return m, nil
+}
+
+// stageOfficial selects the provider's official preset — the way back to the
+// built-in default — and opens the confirmation panel for it, so reverting is
+// one deliberate keypress instead of cycling through the picker.
+func (m Model) stageOfficial() (tea.Model, tea.Cmd) {
+	p := m.app.Selected()
+	if p == nil {
+		return m, nil
+	}
+	if provider.PresetByID(p.Presets(), "official") == nil {
+		m.app.StatusMsg = p.Title() + " 没有官方源方案集"
+		m.app.StatusErr = true
+		return m, nil
+	}
+	m.app.SelectPreset(p, "official")
+	if m.app.Plan == nil || m.app.Plan.Empty() {
+		m.app.StatusMsg = "已是官方默认配置"
+		m.app.StatusErr = false
+		return m, nil
+	}
+	m.confirming = true
+	return m, nil
+}
+
+// updateConfirm handles keys while a plan is staged for confirmation.
+func (m Model) updateConfirm(s string) (tea.Model, tea.Cmd) {
+	switch s {
+	case "enter", "y":
+		m.confirming = false
+		_ = m.app.Apply()
+		return m, nil
+	case "esc", "n":
+		m.confirming = false
+		// Silence, not an error: cancelling is the user doing it right.
+		m.app.StatusMsg = "已取消，未写入任何配置"
+		m.app.StatusErr = false
+		return m, nil
+	case "ctrl+c":
+		m.app.Quit = true
+		return m, tea.Quit
+	}
+	// Every other key is swallowed: the staged diff must not change out from
+	// under the Enter the user is about to press.
 	return m, nil
 }
 
@@ -226,7 +300,8 @@ func (m Model) updateFilter(s string) (tea.Model, tea.Cmd) {
 			m.filterDraft = string(r[:len(r)-1])
 		}
 		return m, nil
-	} // A single printable character extends the draft; control keys are ignored
+	}
+	// A single printable character extends the draft; control keys are ignored
 	// rather than inserted as their escape sequence.
 	//
 	// Counted in runes, not bytes: a Chinese character is one keystroke but
@@ -243,7 +318,7 @@ func (m Model) View() string {
 	if m.help {
 		return renderHelp()
 	}
-	return View(m.app, m.filtering, m.filterDraft)
+	return View(m.app, m.confirming, m.filtering, m.filterDraft)
 }
 
 // renderHelp draws the key reference.
@@ -257,11 +332,13 @@ func renderHelp() string {
 	for _, k := range keys {
 		b.WriteString(fmt.Sprintf("  %-14s %s\n", formatKeys(k.keys), k.desc))
 	}
+	b.WriteString(fmt.Sprintf("  %-14s %s\n", "Enter", "暂存方案，进入确认"))
+	b.WriteString(fmt.Sprintf("  %-14s %s\n", "o", "恢复官方源（进入确认）"))
 	b.WriteString(fmt.Sprintf("  %-14s %s\n", "t", "测速"))
 	b.WriteString(fmt.Sprintf("  %-14s %s\n", "/", "过滤"))
 	b.WriteString(fmt.Sprintf("  %-14s %s\n", "?", "本页"))
-	b.WriteString(fmt.Sprintf("  %-14s %s\n", "esc", "关闭"))
-	b.WriteString("\n  方向键即可上下移动；j/k 等字母键同样可用。\n\n  按任意键返回")
+	b.WriteString(fmt.Sprintf("  %-14s %s\n", "esc", "取消 / 关闭"))
+	b.WriteString("\n  应用走 预览 → 暂存 → 确认 三步：Enter 暂存后显示完整差异，\n  再按 Enter 才写入，Esc 随时取消。\n\n  方向键即可上下移动；j/k 等字母键同样可用。\n\n  按任意键返回")
 	return b.String()
 }
 

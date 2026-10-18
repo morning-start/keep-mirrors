@@ -302,6 +302,12 @@ func (m *Model) selectedPresetID(p provider.Provider) string {
 	return ""
 }
 
+// SelectedPresetID is the exported view of selectedPresetID, for renderers that
+// need the preset id (to look up its Note) rather than its display label.
+func (m *Model) SelectedPresetID(p provider.Provider) string {
+	return m.selectedPresetID(p)
+}
+
 // RefreshSelection recomputes the plan for the newly selected provider and
 // clears the benchmark, which belongs to the previous selection.
 func (m *Model) RefreshSelection() {
