@@ -19,7 +19,7 @@ local M = {}
 
 M.api       = { major = 1, minor = 0 }
 M.id        = "cargo"
-M.version   = "1.0.0"
+M.version   = "1.1.0"
 M.title     = "Rust / cargo"
 M.category  = "language"
 M.author    = "keep-mirrors"
@@ -146,16 +146,15 @@ function M.plan(ctx, opts)
   local warnings = {}
 
   if index == "" and registry == "" then
+    -- Restore the official source: strip the managed block so cargo uses
+    -- crates.io directly. `replace-with = ''` is NOT the default — cargo
+    -- looks for a source whose name is the empty string and every fetch
+    -- fails with "could not find a configured source with the name ``".
     table.insert(changes, {
-      kind   = "config",
+      kind   = "config-remove",
       file   = path,
       format = "hash",
-      syntax = "toml",
       block  = "cargo",
-      entries = {
-        -- Empty replace-with restores the default registry.
-        { section = "source.crates-io", key = "replace-with", value = "''" },
-      },
     })
     return { changes = changes, warnings = warnings }
   end

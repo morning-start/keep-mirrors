@@ -9,7 +9,7 @@ local M = {}
 
 M.api       = { major = 1, minor = 0 }
 M.id        = "pip"
-M.version   = "1.0.0"
+M.version   = "1.1.0"
 M.title     = "Python / pip"
 M.category  = "language"
 M.author    = "keep-mirrors"
@@ -97,7 +97,10 @@ local function current_index()
   local path = find_config()
   local blk = current_entries(path)
   if blk then
-    local url = blk:match("index%-url%s*=%s*([^\n]+)")
+    -- Anchored to one line and matching zero-or-more: with `+` an empty
+    -- value failed to match on its own line and the capture ran on to the
+    -- tail sentinel, so status reported "# <<" as the current index.
+    local url = blk:match("index%-url[ \t]*=[ \t]*([^\n]*)")
     if url then return (url:gsub("^%s*(.-)%s*$", "%1")) end
   end
   -- The environment variable takes precedence over any config file.
@@ -133,21 +136,19 @@ function M.plan(ctx, opts)
   local warnings = {}
 
   if index == "" then
-    -- Restore the official source: drop the variable and blank the key so
-    -- that a stale value in another pip.conf cannot win.
+    -- Restore the official source: unset the variable and strip the managed
+    -- block, which returns pip to its built-in default. Writing an empty
+    -- value here would leave `index-url = ` in pip.conf, and a blank value
+    -- is not the default — it is a broken config.
     table.insert(changes, {
       kind = "env-unset",
       name = "PIP_INDEX_URL",
     })
     table.insert(changes, {
-      kind   = "config",
+      kind   = "config-remove",
       file   = path,
       format = "hash",
-      syntax = "ini",
       block  = "pip",
-      entries = {
-        { section = "global", key = "index-url", value = "" },
-      },
     })
     if extra ~= "" then
       table.insert(warnings, "extra-index-url 已保留，可手动移除")

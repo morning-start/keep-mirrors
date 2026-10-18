@@ -6,7 +6,7 @@ local M = {}
 
 M.api       = { major = 1, minor = 0 }
 M.id        = "npm"
-M.version   = "1.0.0"
+M.version   = "1.1.0"
 M.title     = "Node.js / npm"
 M.category  = "language"
 M.author    = "keep-mirrors"
@@ -74,7 +74,9 @@ local function current_registry()
   if v then return v end
   local blk = current_entries(npmrc_path())
   if blk then
-    local r = blk:match("registry%s*=%s*([^\n]+)")
+    -- `*` not `+`: an empty value must match as empty on its own line, or
+    -- the capture skips past the newline and grabs the tail sentinel.
+    local r = blk:match("registry[ \t]*=[ \t]*([^\n]*)")
     if r then return (r:gsub("^%s*(.-)%s*$", "%1")) end
   end
   return nil
@@ -107,16 +109,16 @@ function M.plan(ctx, opts)
   local changes = {}
 
   if registry == "" then
+    -- Restore the official source: unset the variable and strip the managed
+    -- block, returning npm to its built-in default. A blank `registry=`
+    -- would NOT be the default — npm treats it as an invalid URL and every
+    -- install fails with ERR_INVALID_URL.
     table.insert(changes, { kind = "env-unset", name = "npm_config_registry" })
     table.insert(changes, {
-      kind   = "config",
+      kind   = "config-remove",
       file   = path,
       format = "hash",
-      syntax = "kv",
       block  = "npm",
-      entries = {
-        { key = "registry", value = "" },
-      },
     })
     return { changes = changes, warnings = {} }
   end
