@@ -5,7 +5,6 @@ package env
 import (
 	"fmt"
 	"os"
-	"strings"
 )
 
 // On POSIX the only durable, per-user environment store we can touch without
