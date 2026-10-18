@@ -255,6 +255,28 @@ Windows 注册表没有 per-process 覆盖机制，测试改的是真实用户�
 HOME/APPDATA/CARGO_HOME/GOENV 全指到临时目录；注册表则改为断言「撤销后
 恢复到 apply 前的值」而不是断言某个具体终值。
 
+### 6.7 `%s` 在 Lua pattern 里包含换行
+
+`registry%s*=%s*([^\n]+)` 读回配置时，`%s` 会吃掉空值后面的换行符，捕获组
+落到下一行——通常是 `# <<<` 哨兵行，于是 `status()` 把哨兵当成了当前配置，
+界面显示「已配置：# <」。`+` 换 `*` 治不了这个（`%s` 照样跨行），必须把
+等号两侧的 `%s` 换成 `[ \t]`，值用 `[^\n]*` 让空值按空匹配。
+
+**症状**：写入空值后界面显示一段注释。四个官方插件在空值路径上全中——
+「apply → status 有值往返」测试覆盖不到它，因为正常 apply 永远写非空值。
+对策：`TestStatusReadsEmptyValueAsEmpty` 手工构造空值块直接测读回。
+
+### 6.8 「恢复官方源」不能写空值
+
+空值不是默认值，是无效配置：`registry=` 让 npm 每次安装报
+`ERR_INVALID_URL`；`replace-with = ''` 让 cargo 找名字为空的 source，
+所有 fetch 失败。两者都在真机上验证过（后者曾把开发机的 cargo 弄坏）。
+
+对策：新增 `config-remove` 变更类型（对应 `marker.Remove`，补上了 §1.3
+承诺的「撤销 = 整块摘除」语义），四个插件的 official 预设改为摘除托管块。
+配套修复 `marker.Remove` 的两个缺陷：它曾对全文件做 `\n\n\n` → `\n\n`
+折叠（违反「块外一字不动」），且不回收 Replace 加的分隔行。
+
 ---
 
 ## 7. 平台差异
@@ -418,7 +440,7 @@ BOM，于是第一行变成 `\ufeffsha=`，key 匹配不上，整个文件看起
 |---|---|---|
 | 沙箱 | 危险全局函数必须不存在；`~` 外读取必须被拒；死循环必须被中断；契约版本不匹配必须被拒 | `internal/engine/engine_test.go` |
 | 契约 | 种子里每个插件都能 load、能 `status()`、能 `plan()`，且 default preset 计划非空 | `internal/engine/plugins_test.go` |
-| 往返 | apply 后 `status()` 必须反映改动（防 §6.1） | `cmd/km/e2e_test.go` |
+| 往返 | apply 后 `status()` 必须反映改动（防 §6.1）；official 预设必须摘除块且 status 归零（防 §6.8）；空值块读回不得捕获哨兵（防 §6.7） | `cmd/km/e2e_test.go` |
 | 撤销 | apply 改变的值，undo 必须恢复到 apply 前；备份经 manifest 往返后仍带环境变量原值 | `cmd/km/e2e_test.go` |
 | 热重载 | 首轮不算变化、未改不重载、改/增/删都能发现、坏插件不拖垮其余、全坏时拒绝切换、遮蔽文件不误报、旧 VM 延迟关闭 | `internal/engine/reload_test.go` |
 | 插件同步 | SHA 未变不下载、不兼容契约被拒、坏 Lua 被拒、id 不匹配被拒、缺源被拒、全量校验后才落盘、dry-run 不写盘 | `internal/syncs/sync_test.go` |

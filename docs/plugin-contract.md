@@ -92,7 +92,7 @@ function M.benchmark(ctx, urls)
 end
 ```
 
-## The three change kinds
+## The four change kinds
 
 ```lua
 -- 1. Rewrite a config file (managed block)
@@ -106,12 +106,31 @@ end
     { section = "",        key = "registry",   value = "https://..." },  -- no section
   } }
 
--- 2. Set an environment variable
+-- 2. Remove the managed block entirely (restore-official path)
+{ kind = "config-remove",
+  file   = "~/.pip/pip.conf",
+  format = "hash",
+  block  = "pip" }
+
+-- 3. Set an environment variable
 { kind = "env", name = "PIP_INDEX_URL", value = "https://..." }
 
--- 3. Remove an environment variable
+-- 4. Remove an environment variable
 { kind = "env-unset", name = "PIP_INDEX_URL" }
 ```
+
+**Restoring the official source is `config-remove`, never an empty value.**
+Writing `index-url = ` or `registry=` leaves the tool with an invalid config,
+not its default: npm fails every install with `ERR_INVALID_URL` on a blank
+registry, and cargo cannot resolve crates.io when `replace-with = ''` (it
+looks for a source literally named `""`). Deleting the managed block is what
+actually returns the tool to its built-in behaviour.
+
+**Read-back patterns must not cross lines.** `%s` matches newline in Lua, so
+`registry%s*=` eats the line break after an empty value and the capture lands
+on the next line — historically the `# <<<` sentinel, which status then
+reported as the configured registry. Use `[ \t]*` for the padding around `=`
+and `[^\n]*` (not `+`) for the value, so an empty value matches as empty.
 
 ### Rendering rules per syntax
 

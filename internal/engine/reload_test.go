@@ -301,6 +301,10 @@ func TestReloadRetiresOldProvidersLazily(t *testing.T) {
 	}
 	r.Adopt(startup)
 
+	// The reloader compares (mtime, size). Two edits of the same length can
+	// land in the same timestamp tick, which would make the second poll see
+	// "no change" and the test would fail one run in ten. Padding the title
+	// makes the sizes differ, so every poll is guaranteed to observe it.
 	writePlugin(t, official, "pip.lua", pluginSrc("pip", "Pip2"))
 	first, _, changed, err := r.Poll()
 	if err != nil || !changed {
@@ -313,7 +317,7 @@ func TestReloadRetiresOldProvidersLazily(t *testing.T) {
 	}
 
 	// The next poll closes it.
-	writePlugin(t, official, "pip.lua", pluginSrc("pip", "Pip3"))
+	writePlugin(t, official, "pip.lua", pluginSrc("pip", "Pip3-length-differs"))
 	second, _, changed, err := r.Poll()
 	if err != nil || !changed {
 		t.Fatalf("second poll: changed=%v err=%v", changed, err)
