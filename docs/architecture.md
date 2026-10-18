@@ -443,6 +443,7 @@ BOM，于是第一行变成 `\ufeffsha=`，key 匹配不上，整个文件看起
 | 沙箱 | 危险全局函数必须不存在；`~` 外读取必须被拒；死循环必须被中断；契约版本不匹配必须被拒 | `internal/engine/engine_test.go` |
 | 契约 | 种子里每个插件都能 load、能 `status()`、能 `plan()`，且 default preset 计划非空 | `internal/engine/plugins_test.go` |
 | 往返 | apply 后 `status()` 必须反映改动（防 §6.1）；official 预设必须摘除块且 status 归零（防 §6.8）；空值块读回不得捕获哨兵（防 §6.7） | `cmd/km/e2e_test.go` |
+| 纯 env 插件 | flutter 无配置文件：`status()` 必须读持久层而非进程环境，official 必须卸掉两个变量且不碰 `FLUTTER_GIT_URL`，恢复幂等 | `cmd/km/e2e_test.go` `TestFlutterEnvRoundTrip` |
 | 撤销 | apply 改变的值，undo 必须恢复到 apply 前；备份经 manifest 往返后仍带环境变量原值 | `cmd/km/e2e_test.go` |
 | 热重载 | 首轮不算变化、未改不重载、改/增/删都能发现、坏插件不拖垮其余、全坏时拒绝切换、遮蔽文件不误报、旧 VM 延迟关闭 | `internal/engine/reload_test.go` |
 | 插件同步 | SHA 未变不下载、不兼容契约被拒、坏 Lua 被拒、id 不匹配被拒、缺源被拒、全量校验后才落盘、dry-run 不写盘 | `internal/syncs/sync_test.go` |

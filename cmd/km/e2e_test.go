@@ -396,6 +396,130 @@ func TestStatusReadsEmptyValueAsEmpty(t *testing.T) {
 	}
 }
 
+// TestFlutterEnvRoundTrip covers the one plugin with no config file: the
+// mirror is entirely environment variables, so status has to read the persisted
+// store (a variable set in this process alone would vanish with the next
+// terminal) and the official preset has to unset both of them.
+//
+// The third variable, FLUTTER_GIT_URL, is deliberately NOT ours to manage: it
+// points `flutter upgrade` at a git remote (often gitee), and unsetting it
+// would silently repoint the user at github.com. The plugin warns instead.
+func TestFlutterEnvRoundTrip(t *testing.T) {
+	sandbox(t)
+
+	reg, diag, err := loadRegistry()
+	if err != nil {
+		t.Fatalf("loadRegistry: %v", err)
+	}
+	reportBroken(diag)
+
+	p, ok := reg.Get("flutter")
+	if !ok {
+		t.Fatal("flutter provider missing")
+	}
+	m := app.New(reg)
+	m.Cursor = indexOf(reg, "flutter")
+
+	ctx := m.Ctx()
+
+	// 1. Before anything: status reads the persisted store, not this process.
+	if st := p.Status(ctx); strings.Contains(st.Current, "#") {
+		t.Errorf("status picked up a sentinel: %q", st.Current)
+	}
+
+	opts, pid, err := resolvePreset(p, presetOtherThan(p, "official"))
+	if err != nil {
+		t.Fatalf("resolvePreset: %v", err)
+	}
+	// The writes land in the real registry (HKCU cannot be sandboxed), so put
+	// back whatever was there — the official preset deletes these values.
+	saved := saveEnv(func() *core.Plan {
+		pl, err := p.Plan(ctx, withPreset(opts, pid))
+		if err != nil {
+			t.Fatalf("Plan: %v", err)
+		}
+		return pl
+	}())
+	t.Cleanup(func() { restoreEnv(t, saved) })
+
+	// 2. Apply a mirror: both variables land in the persisted store.
+	plan, err := p.Plan(ctx, withPreset(opts, pid))
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	plan.PresetID = pid
+	if err := plan.Describe(); err != nil {
+		t.Fatalf("Describe: %v", err)
+	}
+	if plan.Empty() {
+		t.Fatal("empty plan for the default preset")
+	}
+	if _, err := core.Apply(plan); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+
+	for _, name := range []string{"PUB_HOSTED_URL", "FLUTTER_STORAGE_BASE_URL"} {
+		v, err := env.Read(name)
+		if err != nil {
+			t.Fatalf("env.Read(%s): %v", name, err)
+		}
+		if v == "" {
+			t.Errorf("%s not persisted after apply", name)
+		}
+	}
+	// status must see it via the persisted store, not just the process env.
+	st := p.Status(ctx)
+	if st.Current == "" {
+		t.Error("status after apply is empty")
+	}
+	if opts["pub"] != nil && !strings.Contains(st.Current, opts["pub"].(string)) {
+		t.Errorf("status current = %q, want the applied pub URL %v", st.Current, opts["pub"])
+	}
+
+	// 3. The official preset removes both and leaves nothing behind.
+	opts, pid, err = resolvePreset(p, "official")
+	if err != nil {
+		t.Fatalf("resolvePreset(official): %v", err)
+	}
+	plan, err = p.Plan(ctx, withPreset(opts, pid))
+	if err != nil {
+		t.Fatalf("Plan(official): %v", err)
+	}
+	plan.PresetID = pid
+	if err := plan.Describe(); err != nil {
+		t.Fatalf("Describe: %v", err)
+	}
+	if _, err := core.Apply(plan); err != nil {
+		t.Fatalf("Apply(official): %v", err)
+	}
+
+	for _, name := range []string{"PUB_HOSTED_URL", "FLUTTER_STORAGE_BASE_URL"} {
+		v, err := env.Read(name)
+		if err != nil {
+			t.Fatalf("env.Read(%s) after restore: %v", name, err)
+		}
+		if v != "" {
+			t.Errorf("%s = %q after the official preset, want unset", name, v)
+		}
+	}
+	if st := p.Status(ctx); st.Current != "" {
+		t.Errorf("status after restore = %q, want empty", st.Current)
+	}
+
+	// 4. Idempotent: restoring again produces no changes.
+	plan, err = p.Plan(ctx, withPreset(opts, pid))
+	if err != nil {
+		t.Fatalf("Plan(official) again: %v", err)
+	}
+	plan.PresetID = pid
+	if err := plan.Describe(); err != nil {
+		t.Fatalf("Describe: %v", err)
+	}
+	if !plan.Empty() {
+		t.Errorf("restoring an already-restored state still produced %d change(s)", plan.ChangeCount())
+	}
+}
+
 func indexOf(reg *registry.Registry, id string) int {
 	for i, p := range reg.All() {
 		if p.ID() == id {

@@ -73,6 +73,24 @@ M.settings = {
 **Preset declaration order matters**: the first preset is the default when the
 user never touches the picker. Do not sort presets by id.
 
+## Sources shipped today
+
+| id | ecosystem | what it writes |
+|---|---|---|
+| `pip` | Python / pip | `pip.conf` block + `PIP_INDEX_URL` |
+| `npm` | Node.js / npm | `.npmrc` block + `npm_config_registry` |
+| `cargo` | Rust / cargo | `.cargo/config.toml` block (three coordinated tables) |
+| `go` | Go | `$GOENV` block (`GOPROXY` / `GOSUMDB`) |
+| `flutter` | Flutter / Dart | `PUB_HOSTED_URL` + `FLUTTER_STORAGE_BASE_URL` only |
+
+`flutter` is the shape a pure-env plugin takes: the tool has no config file at
+all, so `status()` must read the durable store with `km.env.persisted` rather
+than `km.env.get` (a value set in this process alone would vanish with the next
+terminal), and the official preset unsets the variables instead of writing empty
+ones. Its third knob, `FLUTTER_GIT_URL`, is deliberately *not* managed: it points
+`flutter upgrade` at a git remote (often gitee), so unsetting it would silently
+repoint the user at github.com — the plugin warns instead.
+
 ## The three functions
 
 ```lua

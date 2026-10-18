@@ -46,7 +46,7 @@ type Options struct {
 // This is deliberately a "must still be present" list rather than an exact set:
 // the branch may add plugins the running binary has never seen, and those are
 // fine to install.
-var knownPlugins = []string{"pip", "npm", "cargo", "go"}
+var knownPlugins = []string{"pip", "npm", "cargo", "go", "flutter"}
 
 // Run performs the sync.
 //

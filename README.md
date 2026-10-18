@@ -2,6 +2,17 @@
 
 一个用 Go 写的终端镜像源管理器。**所有镜像源能力都由 Lua 插件提供**，Go 只负责 TUI、安全沙箱、原子写入、备份与撤销。
 
+pip / npm / cargo / go / flutter 五个源都只是普通 Lua 文件——它们和用户写的
+第三方插件走完全相同的加载路径、沙箱和 Provider 接口：
+
+| id | 生态 | 写什么 |
+|---|---|---|
+| `pip` | Python | `pip.conf` 托管块 + `PIP_INDEX_URL` |
+| `npm` | Node.js | `.npmrc` 托管块 + `npm_config_registry` |
+| `cargo` | Rust | `.cargo/config.toml` 托管块（三张表协同） |
+| `go` | Go | `$GOENV` 托管块（`GOPROXY` / `GOSUMDB`） |
+| `flutter` | Flutter / Dart | `PUB_HOSTED_URL` + `FLUTTER_STORAGE_BASE_URL` |
+
 ## 为什么是 Lua 插件
 
 加一种新镜像源（比如 conda、maven、deno）不需要改 Go 代码、不需要重新编译：
@@ -23,7 +34,8 @@
 
 插件**永远不直接写文件**。它在 `M.plan()` 里返回声明式变更列表
 （"我想改这个文件的这个键"），Go 侧负责：先备份 → 给你看 diff → 确认后原子写入。
-所以一个写错的插件也改不坏你的配置文件。
+所以一个写错的插件也改不坏你的配置文件。flutter 完全没有配置文件，
+它的镜像就是三个环境变量，同样走这条路径（diff 里一样看得到）。
 
 ## 编译与运行
 
@@ -126,8 +138,8 @@ return M
 
 ## 当前状态
 
-已完成：Lua 沙箱与契约、pip / npm / cargo / go 四个插件、托管块写入、备份撤销、
-环境变量（Windows HKCU + POSIX profile）、测速、TUI、无头 CLI、
+已完成：Lua 沙箱与契约、pip / npm / cargo / go / flutter 五个插件、托管块写入、
+备份撤销、环境变量（Windows HKCU + POSIX profile）、测速、TUI、无头 CLI、
 插件目录分离（official / user）、首次运行播种、热重载、**从插件分支同步**。
 
 热重载：TUI 每秒检查一次插件目录，保存文件后界面会自动用上新版本，不用重启。

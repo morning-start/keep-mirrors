@@ -1,13 +1,33 @@
 package main
 
 import (
+	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"keep-mirrors/internal/engine"
 	"keep-mirrors/internal/paths"
+	"keep-mirrors/internal/plugins"
 )
+
+// seedLuaCount counts the .lua files in the embedded seed snapshot, so a test
+// can assert the seeded directory matches the snapshot without pinning a number
+// that every new plugin invalidates.
+func seedLuaCount() (int, error) {
+	entries, err := fs.ReadDir(plugins.FS, ".")
+	if err != nil {
+		return 0, err
+	}
+	n := 0
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), ".lua") {
+			n++
+		}
+	}
+	return n, nil
+}
 
 // TestHotReloadSeesDiskEdit is the end-to-end check for the whole point of the
 // disk-based plugin model: editing a plugin file changes what the tool runs,
@@ -143,10 +163,17 @@ func TestSeededPluginsAreRealFiles(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read official dir: %v", err)
 	}
-	if len(entries) != 4 {
-		t.Errorf("official dir holds %d files, want the 4 seeded plugins", len(entries))
+	// Count the seed rather than hardcoding a number: every new plugin would
+	// otherwise trip this test for no reason. The list below still pins the
+	// names the tool has always shipped.
+	want, err := seedLuaCount()
+	if err != nil {
+		t.Fatalf("count seed: %v", err)
 	}
-	for _, name := range []string{"pip.lua", "npm.lua", "cargo.lua", "go.lua"} {
+	if len(entries) != want {
+		t.Errorf("official dir holds %d files, want the %d seeded plugins", len(entries), want)
+	}
+	for _, name := range []string{"pip.lua", "npm.lua", "cargo.lua", "go.lua", "flutter.lua"} {
 		p := filepath.Join(official, name)
 		if _, err := os.Stat(p); err != nil {
 			t.Errorf("%s is not a real file: %v", name, err)
