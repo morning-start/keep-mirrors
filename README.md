@@ -192,6 +192,34 @@ km plugin sync             # 拉 plugins 分支的最新插件
 和 raw URL，**不需要 token，也不消耗 GitHub API 配额**。写入前逐个编译校验，
 任何一个不兼容就整批拒绝，不会留下半个可用的插件集。
 
+## 发版
+
+打 tag 就会出包，不用手工编译任何平台：
+
+```bash
+git tag v1.2.0
+git push origin master --tags
+```
+
+[.github/workflows/release.yml](.github/workflows/release.yml) 干三件事：
+
+1. **verify** —— ubuntu 和 windows 两个 runner 各跑一遍 `go build` / `go vet` /
+   `go test` / `gofmt`，再拿 `internal/plugins/PROVENANCE` 和 `plugins` 分支的 HEAD
+   比对。种子没 stamp、或者 stamp 之后插件分支又往前走了一步，这里直接红。发一个
+   插件落后的包，比不发更糟。
+2. **build** —— 交叉编译 6 个目标（linux / darwin / windows × amd64 / arm64），
+   产出 `km-<版本>-<os>-<arch>.zip`（Windows）或 `.tar.gz`，包里是二进制和
+   README。linux/amd64 那份会真的执行一次 `km version`，确认它记录的 revision
+   就是这个 tag 指向的提交。
+3. **release** —— 汇总出 `SHA256SUMS`，建 GitHub Release 并附上全部产物。
+   `v1.2.0-rc1` 这样的 tag 自动标成 prerelease。
+
+第一次不必造真 tag 也能验证流水线：工作流带 `workflow_dispatch`，手动触发只跑
+verify 和 build，`release` 一步有 `if` 守卫，不会误发版。
+
+> 首次使用前确认仓库 Settings → Actions → General → Workflow permissions 是
+> 「Read and write permissions」，否则 `gh release create` 没有写权限。
+
 计划中：
 
 - 本地导入：`km plugin import <path>`

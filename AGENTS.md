@@ -202,6 +202,12 @@ git tag v1.2.0 && git push origin master --tags
 不一致就退出。所以忘了 `git checkout plugins -- internal/plugins/` 会被它拦住，
 不会把错的 SHA 记进去。
 
+推上去的 tag 会触发 `.github/workflows/release.yml`。它把 stamp 这件事**再校验
+一遍**（PROVENANCE 必须等于 plugins 分支 HEAD），然后交叉编译 6 个目标、生成
+`SHA256SUMS` 并建 Release。所以「stamp 完插件分支又动了」这种时序错误会在发版
+时变红，而不是变成一个插件落后的包。想先验证流水线而不发版，用 Actions 页面
+上的 workflow_dispatch 手动跑——`release` 那一步有 `if` 守卫，只会在 tag 上执行。
+
 ---
 
 ## 4. 真实发生过的坑

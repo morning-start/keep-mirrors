@@ -1,0 +1,162 @@
+name: release
+
+# 打 tag 出包：v1.2.0 → 6 个平台的 km-1.2.0-<os>-<arch>.{zip,tar.gz}，外加
+# SHA256SUMS 和 GitHub Release。
+#
+# workflow_dispatch 是给"第一次跑这条流水线"用的：不造真 tag 也能把 verify
+# 和 build 跑一遍，release 一步带 if 守卫，所以手动触发不会误发版。
+#
+# 发版前置条件是打 tag 的那个提交里带着已 stamp 的种子快照（AGENTS.md §3.7）。
+# verify 里的最后一步会拿 PROVENANCE 和 plugins 分支 HEAD 比对，不一致直接红，
+# 免得发出一个"插件落后于分支"的包。
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+# 所有 run 步骤用 bash，Windows runner 上是 git-bash，省得同一段脚本写两遍。
+defaults:
+  run:
+    shell: bash
+
+env:
+  CGO_ENABLED: "0"
+
+jobs:
+  verify:
+    name: verify (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # Windows 是主要开发平台，Linux 才能跑到 *_posix.go 和 shell rc 那几条
+        # 路径；两个都跑，别让跨平台二进制发出去却没在对应系统上测过。
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: build, vet, test, gofmt
+        run: |
+          set -euo pipefail
+          go build ./...
+          go vet ./...
+          go test ./...
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "::error::gofmt needed on: $unformatted"
+            exit 1
+          fi
+      - name: the snapshot must be the head of the plugins branch
+        run: |
+          set -euo pipefail
+          stamped="$(sed -n 's/^sha=//p' internal/plugins/PROVENANCE | tr -d '\r')"
+          head="$(git ls-remote origin refs/heads/plugins | cut -f1)"
+          echo "seed    = $stamped"
+          echo "plugins = $head"
+          if [ -z "$stamped" ] || [ "$stamped" != "$head" ]; then
+            echo "::error::internal/plugins/ is not the head of the plugins branch."
+            echo "Fix: git checkout plugins -- internal/plugins/ && pwsh -File scripts/stamp-plugins.ps1, commit, then re-tag."
+            exit 1
+          fi
+
+  build:
+    needs: verify
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+          - goos: linux
+            goarch: arm64
+          - goos: darwin
+            goarch: amd64
+          - goos: darwin
+            goarch: arm64
+          - goos: windows
+            goarch: amd64
+          - goos: windows
+            goarch: arm64
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      # 交叉编译放在 Linux 上就够了：纯 Go、CGO_ENABLED=0，不需要目标系统的
+      # 工具链，也没必要为 6 个目标开 6 台 runner。
+      - name: build and package
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          stage="km-${version}-${GOOS}-${GOARCH}"
+          bin=km
+          if [ "$GOOS" = windows ]; then bin=km.exe; fi
+          mkdir -p "build/$stage" artifacts
+          go build -trimpath -ldflags="-s -w" -o "build/$stage/$bin" ./cmd/km
+          cp README.md "build/$stage/"
+          if [ "$GOOS" = windows ]; then
+            (cd build && zip -qr "../artifacts/$stage.zip" "$stage")
+          else
+            (cd build && tar -czf "../artifacts/$stage.tar.gz" "$stage")
+          fi
+      # 能在这里跑的就真跑一次：`km version` 读的是编译期写入的 vcs.revision，
+      # 它等于这个 tag 指向的提交，才算这个包确实来自这份源码。
+      - name: smoke test the linux/amd64 binary
+        if: matrix.goos == 'linux' && matrix.goarch == 'amd64'
+        run: |
+          set -euo pipefail
+          out="$(build/km-*/km version)"
+          echo "$out"
+          want="$(git rev-parse --short=7 HEAD)"
+          case "$out" in
+            "km $want "*) ;;
+            *) echo "::error::the binary reports '$out', expected revision $want"; exit 1 ;;
+          esac
+      - uses: actions/upload-artifact@v4
+        with:
+          name: km-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: artifacts/*
+          if-no-files-found: error
+
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: checksums
+        run: |
+          set -euo pipefail
+          cd dist
+          sha256sum km-* > SHA256SUMS
+          cat SHA256SUMS
+      - name: publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          extra=""
+          case "$version" in *-*) extra="--prerelease" ;; esac
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --verify-tag \
+            --title "keep-mirrors $version" \
+            --generate-notes \
+            $extra
