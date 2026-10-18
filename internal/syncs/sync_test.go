@@ -81,6 +81,9 @@ func sandbox(t *testing.T) string {
 	t.Setenv("APPDATA", appData)
 	t.Setenv("HOME", appData)
 	t.Setenv("USERPROFILE", appData)
+	// See engine.seedSandbox: os.UserConfigDir prefers XDG_CONFIG_HOME, so an
+	// inherited value would point the plugin dir at the real config root.
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(appData, ".config"))
 	paths.Reset()
 	dir := paths.OfficialPluginDir()
 	if err := os.MkdirAll(dir, 0o755); err != nil {

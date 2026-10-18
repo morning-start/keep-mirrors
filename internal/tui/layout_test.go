@@ -35,6 +35,9 @@ func viewLayoutTestRegistry(t *testing.T) *registry.Registry {
 	t.Setenv("USERPROFILE", home)
 	t.Setenv("APPDATA", filepath.Join(home, "AppData", "Roaming"))
 	t.Setenv("LOCALAPPDATA", filepath.Join(home, "AppData", "Local"))
+	// POSIX: os.UserConfigDir prefers XDG_CONFIG_HOME, and an inherited value
+	// would seed the real plugin dir instead of this sandbox.
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
 	// The plugins consult these to locate their configs; inheriting the
 	// developer's values would point the plan at real machine files.
 	t.Setenv("GOENV", "")

@@ -326,6 +326,19 @@ UI 会显示「2 处待改」、`apply` 会原样重写一遍文件。
 本机创建符号链接在 PowerShell 里需要管理员权限，但 Go 的 `os.Symlink` 能
 成功，所以相关测试不会 skip——它们真的验证了这条边界。
 
+### 4.10 测试沙箱要同时接管 HOME、APPDATA 和 XDG_CONFIG_HOME
+
+`paths.AppDir()` 来自 `os.UserConfigDir()`：Windows 读 `APPDATA`，POSIX 读
+`XDG_CONFIG_HOME`，都没有才退回 `$HOME/.config`。只设 HOME 的沙箱在 Windows
+上是对的，在 Linux 上会把插件目录留在 runner 的真实 config 根里，于是同一个
+CI run 里所有包共用一个自己没写过的插件集——症状是「播种写了 0 个文件」「dry
+run 写了 5 个文件」这类完全对不上的断言。
+
+现在的规矩：沙箱 helper 显式设置 `HOME`、`USERPROFILE`、`APPDATA`、
+`XDG_CONFIG_HOME`，并断言插件目录真的落在临时目录里。另外 `t.Cleanup` 是
+LIFO——`paths.Reset` 必须**先注册**，否则它会在环境变量还原之前重读缓存。
+
+
 ---
 
 ## 5. 怎么加一个新镜像源

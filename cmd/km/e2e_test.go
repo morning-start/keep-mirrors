@@ -29,15 +29,21 @@ import (
 func sandbox(t *testing.T) string {
 	t.Helper()
 	home := t.TempDir()
+	// LIFO: Reset must run after the environment is restored, or the package
+	// caches a temp home that is about to be deleted.
+	t.Cleanup(paths.Reset)
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
 	t.Setenv("APPDATA", filepath.Join(home, "AppData", "Roaming"))
 	t.Setenv("LOCALAPPDATA", filepath.Join(home, "AppData", "Local"))
+	// POSIX ignores APPDATA: os.UserConfigDir prefers XDG_CONFIG_HOME. Without
+	// this the plugin dir lands in the runner's real config root, and every
+	// package in the CI run shares one plugin set it never wrote.
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
 	t.Setenv("CARGO_HOME", "")
 	t.Setenv("GOENV", "")
 	t.Setenv("GOPROXY", "")
 	paths.Reset()
-	t.Cleanup(paths.Reset)
 	// The tests call loadRegistry directly instead of going through run(), so
 	// the seed has to be installed here too. Doing it explicitly is what makes
 	// the seeding path part of what these tests cover.

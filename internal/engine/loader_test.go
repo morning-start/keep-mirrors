@@ -3,6 +3,7 @@ package engine_test
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"testing/fstest"
 
@@ -24,7 +25,15 @@ func seedSandbox(t *testing.T) string {
 	t.Setenv("APPDATA", appData)
 	t.Setenv("HOME", appData)
 	t.Setenv("USERPROFILE", appData)
+	// POSIX resolves the app dir through os.UserConfigDir, which prefers
+	// XDG_CONFIG_HOME over $HOME/.config. Leaving it inherited put the plugin
+	// directory in the runner's real config dir while home pointed at the temp
+	// one, so every package in the CI run shared a plugin set it never wrote.
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(appData, ".config"))
 	paths.Reset()
+	if dir := paths.OfficialPluginDir(); !strings.HasPrefix(dir, appData) {
+		t.Fatalf("sandbox did not take: plugin dir %q is outside %q", dir, appData)
+	}
 	return appData
 }
 

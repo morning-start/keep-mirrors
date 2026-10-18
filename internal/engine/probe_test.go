@@ -18,6 +18,7 @@ func TestProbeReadAndFind(t *testing.T) {
 	t.Cleanup(paths.Reset)
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
 	paths.Reset()
 
 	dir := filepath.Join(home, ".config", "go")
