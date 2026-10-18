@@ -21,8 +21,9 @@
 仓库里的 `internal/plugins/*.lua` 是**种子快照**：首次运行（`official/` 为空）
 释放一次，让离线安装可用。之后它不再参与加载，所以改种子只影响新安装的机器。
 
-插件**永远不直接写文件**。它调用 `km.plan.*` 声明"我想改这个文件的这个键"，
-Go 侧负责：先备份 → 给你看 diff → 确认后原子写入。所以一个写错的插件也改不坏你的配置文件。
+插件**永远不直接写文件**。它在 `M.plan()` 里返回声明式变更列表
+（"我想改这个文件的这个键"），Go 侧负责：先备份 → 给你看 diff → 确认后原子写入。
+所以一个写错的插件也改不坏你的配置文件。
 
 ## 编译与运行
 
@@ -46,10 +47,10 @@ go build -o km ./cmd/km
 
 | 机制 | 说明 |
 |---|---|
-| 文件 | 只能读 `~` 以内的文件，且只读；`..` 越界直接报错 |
-| 标准库 | 只开 `base`/`string`/`table`/`math` + 裁剪版 `os`（仅 time/date/getenv） |
-| 禁用 | `io.*`、`os.execute`、`os.exit`、`dofile`、`loadfile`、`require`、`debug` |
-| 超时 | 每次调用带 deadline，VM 在指令边界检查，死循环会被强杀 |
+| 文件 | 只能读 `~` 以内的文件，且只读；路径先解析符号链接再比对，越界直接报错 |
+| 标准库 | 只开 `base`/`string`/`table`/`math` + 裁剪版 `os`（仅 clock/date/difftime/getenv/time） |
+| 禁用 | `io.*`、`os.execute/exit/remove/rename/setenv/tmpname`、`dofile`、`loadfile`、`load`、`loadstring`、`require`、`debug`、`collectgarbage` |
+| 超时 | 每次调用带 deadline（10 秒），VM 在指令边界检查，死循环会被强杀 |
 | 内存 | 单插件 64 MB 硬上限 |
 | 进程 | `km.exec.run` 只允许白名单可执行文件，且带超时 |
 | 网络 | 只有 `km.http.get`，且仅 http/https |
@@ -88,6 +89,10 @@ trusted-host = pypi.tuna.tsinghua.edu.cn
 ```
 
 第二次写入 = 整块替换，幂等。撤销时整块摘除。你的注释、手写配置、工具自有格式全部保留。
+
+**恢复官方源 = 摘除整块**，不是写空值：`registry=` 让 npm 每次安装报
+`ERR_INVALID_URL`，空值是无效配置而不是默认值。`--preset=official` 就是把
+托管块从文件里干净地拿掉，工具回到内置默认行为。
 
 ## 状态与备份
 

@@ -35,8 +35,8 @@ pip / npm / cargo / go 四个源不是 Go 内置的特殊逻辑，而是普通 L
 
 ### 1.2 插件只提案，Go 才执行
 
-插件**没有任何写文件的原语**。它调用 `km.plan.*` 声明意图，返回一个
-声明式的变更列表；Go 侧负责读取当前状态、生成 diff、备份、原子写入。
+插件**没有任何写文件的原语**。它在 `M.plan()` 里返回一个声明式的变更列表；
+Go 侧负责读取当前状态、生成 diff、备份、原子写入。
 
 这个间接层买到了三件原本要每个 provider 各写一遍的东西：
 
@@ -135,8 +135,10 @@ section-aware 的结构化改写（且必定先备份）。
   │                    ├─► core.NewBackup(plan)          ← 拷原文件 + 记环境变量原值
   │                    │
   │                    └─► 逐条执行
-  │                         ├─ ChangeConfig → marker.Replace → fsutil.WriteFile
-  │                         └─ ChangeEnv    → env.Write (注册表/profile + 广播)
+  │                         ├─ ChangeConfig / ChangeConfigRemove
+  │                         │     → marker.Replace / marker.Remove → fsutil.WriteFile
+  │                         └─ ChangeEnv / ChangeEnvUnset
+  │                               → env.Write / env.Delete (注册表/profile + 广播)
   │
   └─► tui.View() 重新渲染 diff 和状态栏
 ```

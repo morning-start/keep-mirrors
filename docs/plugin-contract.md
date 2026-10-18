@@ -32,7 +32,7 @@ M.category  = "language"                  -- language|container|os|tool
 M.version     = "1.0.0"                   -- the plugin's own release
 M.author      = "keep-mirrors"
 M.license     = "MIT"
-M.homepage    = "https://github.com/keep-mirrors/plugins/blob/main/pip.lua"
+M.homepage    = "https://github.com/morning-start/keep-mirrors/blob/plugins/pip.lua"
 M.description = "pip 的 index-url 与 trusted-host"
 
 -- Advisory: used by the UI, not a load-time gate
@@ -161,11 +161,18 @@ km.exec.run({ cmd = {"npm","config","get","registry"}, timeout = 5 })  -- -> { s
 km.http.get(url, { timeout = 8 })    -- -> { status, body } or nil, err
 
 km.log("info", "message")            -- write to the plugin log
-os.clock(), os.date()                -- for timing
+os.clock(), os.date()                -- timing; os.time/difftime/getenv also exist
 ```
 
 All paths resolve relative to `km.home()`. `km.fs.read` refuses paths outside
 `~` by raising an error.
+
+**Resource caps** (enforced, not advisory): `km.http.get` truncates the body
+at 1 MiB and `km.fs.read` at 4 MiB — do not fetch anything larger and expect
+the tail. `km.exec.run` and `km.http.get` default to a 5 s timeout; pass
+`timeout = n` (seconds) to override. Every Lua call is additionally capped at
+10 s by the engine, which kills the VM — the per-call timeout only bounds the
+child process / HTTP request inside it.
 
 ## Reading back a managed block
 
