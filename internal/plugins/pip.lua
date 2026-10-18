@@ -9,16 +9,16 @@ local M = {}
 
 M.api       = { major = 1, minor = 0 }
 M.id        = "pip"
-M.version   = "1.1.0"
+M.version   = "1.2.0"
 M.title     = "Python / pip"
 M.category  = "language"
 M.author    = "keep-mirrors"
 M.license   = "MIT"
 M.homepage  = "https://github.com/morning-start/keep-mirrors/blob/master/internal/plugins/pip.lua"
-M.description = "pip 的 index-url 与 trusted-host，写入 pip.conf 并同步 PIP_INDEX_URL"
+M.description = "pip 的 index-url 与 trusted-host，写入 pip.conf 并同步 PIP_INDEX_URL；同名方案集一并设置 uv 与 pdm 的索引"
 M.platforms = { "windows", "linux", "darwin" }
 M.detects   = { "python", "python3", "pip", "pip3" }
-M.envs      = { "PIP_INDEX_URL", "PIP_EXTRA_INDEX_URL" }
+M.envs      = { "PIP_INDEX_URL", "PIP_EXTRA_INDEX_URL", "UV_DEFAULT_INDEX", "PDM_PYPI_URL" }
 
 M.presets = {
   { id = "tuna",     label = "清华大学 TUNA",
@@ -115,14 +115,57 @@ local function python_present()
   return false
 end
 
+-- pip's index setting reaches pip only. uv and pdm are separate Python
+-- installers with separate variables, so "switch the Python mirror" that
+-- touched one of them would leave the rest quietly downloading from pypi.org.
+-- All three follow the same preset; the group is what makes that one action.
+--
+-- A member is written only when its tool is on PATH: a machine that has never
+-- run uv should not collect a dead UV_DEFAULT_INDEX that nothing reads and
+-- that the settings screen cannot explain. status() applies the same rule, so
+-- a half-configured group (installed after the last apply) reports itself.
+local group = {
+  { tool = "uv",  env = "UV_DEFAULT_INDEX" },
+  { tool = "pdm", env = "PDM_PYPI_URL" },
+}
+
+-- uv still reads this deprecated alias, but only while UV_DEFAULT_INDEX is
+-- unset (checked against uv 0.13). Harmless next to our value; alive again the
+-- moment the mirror is removed, which is why the official restore warns about
+-- it rather than leaving a surprise behind.
+local UV_LEGACY = "UV_INDEX_URL"
+
+local function tool_present(cmd)
+  return km.fs.which(cmd) ~= nil
+end
+
+local function group_drift(cur)
+  local out = {}
+  for _, g in ipairs(group) do
+    if tool_present(g.tool) and (km.env.get(g.env) or "") ~= cur then
+      table.insert(out, g.tool)
+    end
+  end
+  return out
+end
+
 -- ── contract functions ─────────────────────────────────────────────────
 
 function M.status(ctx)
+  local cur = current_index() or ""
+  local drift = group_drift(cur)
+  local note = ""
+  if #drift > 0 then
+    -- The note is the only place the group can admit it is half applied: the
+    -- badge speaks for pip alone, and a user who sees "已配置" would otherwise
+    -- never learn that uv still talks to pypi.org.
+    note = table.concat(drift, "、") .. " 的索引与 pip 不一致"
+  end
   return {
     installed = python_present(),
-    current   = current_index() or "",
+    current   = cur,
     healthy   = true,
-    note      = "",
+    note      = note,
   }
 end
 
@@ -145,6 +188,11 @@ function M.plan(ctx, opts)
       kind = "env-unset",
       name = "PIP_INDEX_URL",
     })
+    for _, g in ipairs(group) do
+      if tool_present(g.tool) then
+        table.insert(changes, { kind = "env-unset", name = g.env })
+      end
+    end
     table.insert(changes, {
       kind   = "config-remove",
       file   = path,
@@ -153,6 +201,10 @@ function M.plan(ctx, opts)
     })
     if extra ~= "" then
       table.insert(warnings, "extra-index-url 已保留，可手动移除")
+    end
+    if tool_present("uv") and (km.env.get(UV_LEGACY) or "") ~= "" then
+      table.insert(warnings,
+        UV_LEGACY .. " 仍然设置（uv 已废弃该项）；移除镜像后 uv 会回落到它")
     end
     return { changes = changes, warnings = warnings }
   end
@@ -182,6 +234,11 @@ function M.plan(ctx, opts)
     name  = "PIP_INDEX_URL",
     value = index,
   })
+  for _, g in ipairs(group) do
+    if tool_present(g.tool) then
+      table.insert(changes, { kind = "env", name = g.env, value = index })
+    end
+  end
   return { changes = changes, warnings = warnings }
 end
 
