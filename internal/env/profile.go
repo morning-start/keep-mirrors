@@ -91,6 +91,11 @@ func unquoteValue(v string) string {
 // unset removes entries wherever they are. Because foreign lines are rewritten
 // in place, a user who hand-maintains PIP_INDEX_URL keeps it in the position
 // they chose, and we never duplicate the variable.
+//
+// Entries already inside our block are the starting point of the rebuild, not
+// something to discard: `km apply` writes one variable per call, so a function
+// that rebuilt the block from `set` alone would make each write silently erase
+// the variables written before it.
 func UpsertProfile(body string, sh ShellKind, set map[string]string, unset []string) string {
 	lines := strings.Split(body, "\n")
 	unsetSet := map[string]bool{}
@@ -98,58 +103,78 @@ func UpsertProfile(body string, sh ShellKind, set map[string]string, unset []str
 		unsetSet[n] = true
 	}
 
-	kept := make([]string, 0, len(lines)+len(set))
+	kept := make([]string, 0, len(lines)+len(set)+3)
+	blockVars := map[string]string{}
+	foreign := map[string]bool{}
+	blockAt := -1 // where the rebuilt block goes; -1 means "append"
 	inBlock := false
-	blockIdx := -1
 
 	for _, raw := range lines {
 		line := strings.TrimSpace(raw)
-		if line == ShellComment(sh, blockHead) {
+		switch {
+		case line == ShellComment(sh, blockHead):
+			// Every marker is consumed, including the duplicate heads an older
+			// version of this function could leave behind: one pass has to be
+			// enough to converge a damaged profile.
+			if blockAt < 0 {
+				blockAt = len(kept)
+			}
 			inBlock = true
-			kept = append(kept, raw)
-			blockIdx = len(kept) - 1
 			continue
-		}
-		if line == ShellComment(sh, blockTail) {
+		case line == ShellComment(sh, blockTail):
 			inBlock = false
-			kept = append(kept, raw)
+			continue
+		case inBlock:
+			if n, v, ok := parseLine(line, sh); ok {
+				blockVars[n] = v
+			}
 			continue
 		}
-		if inBlock {
-			// Block content is always regenerated below.
-			continue
-		}
+
 		if name, _, ok := parseLine(line, sh); ok {
 			if unsetSet[name] {
+				delete(blockVars, name)
 				continue // drop it
 			}
 			if v, ok := set[name]; ok {
 				kept = append(kept, ShellExport(sh, name, v))
 				delete(set, name)
+				// The variable now lives on this line; leaving it in the block
+				// too would export it twice.
+				delete(blockVars, name)
 				continue
 			}
+			// A hand-written entry the caller is not touching. It owns the
+			// variable, so the block's copy goes — one name, one line.
+			foreign[name] = true
 		}
 		kept = append(kept, raw)
 	}
 
-	// Anything left in set has no home yet: rebuild the managed block.
-	block := renderBlock(sh, set)
-	if len(block) == 0 {
-		// No new entries: keep the file as-is minus any stale block body.
-		if blockIdx >= 0 {
-			return strings.Join(stripBlock(kept, sh), "\n")
-		}
-		return strings.Join(kept, "\n")
+	// Anything left in set has no home yet: rebuild the managed block around
+	// the variables it already held.
+	for n, v := range set {
+		blockVars[n] = v
+	}
+	for n := range unsetSet {
+		delete(blockVars, n)
+	}
+	for n := range foreign {
+		delete(blockVars, n)
 	}
 
-	if blockIdx >= 0 {
-		out := make([]string, 0, len(kept)+len(block))
-		out = append(out, kept[:blockIdx+1]...)
-		out = append(out, block...)
-		out = append(out, kept[blockIdx+1:]...)
-		return strings.Join(out, "\n")
+	block := renderBlock(sh, blockVars)
+	if len(block) == 0 {
+		return strings.Join(kept, "\n")
 	}
-	return strings.Join(append(kept, block...), "\n")
+	if blockAt < 0 {
+		blockAt = len(kept)
+	}
+	out := make([]string, 0, len(kept)+len(block))
+	out = append(out, kept[:blockAt]...)
+	out = append(out, block...)
+	out = append(out, kept[blockAt:]...)
+	return strings.Join(out, "\n")
 }
 
 // renderBlock builds the managed block lines for set.
@@ -162,35 +187,6 @@ func renderBlock(sh ShellKind, set map[string]string) []string {
 		out = append(out, ShellExport(sh, n, set[n]))
 	}
 	return append(out, ShellComment(sh, blockTail))
-}
-
-// stripBlock removes a managed block that has become empty, including the
-// blank line it leaves behind, so repeated apply/remove cycles converge.
-func stripBlock(lines []string, sh ShellKind) []string {
-	out := make([]string, 0, len(lines))
-	skip := false
-	for _, l := range lines {
-		t := strings.TrimSpace(l)
-		if t == ShellComment(sh, blockHead) {
-			skip = true
-			continue
-		}
-		if t == ShellComment(sh, blockTail) {
-			skip = false
-			continue
-		}
-		if skip {
-			continue
-		}
-		out = append(out, l)
-	}
-	for len(out) > 0 && strings.TrimSpace(out[len(out)-1]) == "" {
-		out = out[:len(out)-1]
-	}
-	if len(out) > 0 {
-		out = append(out, "")
-	}
-	return out
 }
 
 // WriteProfile writes body to path, creating parents as needed.

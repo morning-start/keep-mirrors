@@ -338,6 +338,16 @@ run 写了 5 个文件」这类完全对不上的断言。
 `XDG_CONFIG_HOME`，并断言插件目录真的落在临时目录里。另外 `t.Cleanup` 是
 LIFO——`paths.Reset` 必须**先注册**，否则它会在环境变量还原之前重读缓存。
 
+### 4.11 Windows 上跑不到的 POSIX 代码只能靠 CI 验
+
+`env_posix.go`、`profile.go` 这些在 Windows 上要么不编译、要么不被调用。
+`cmd/km` 的 flutter 往返测试在 Windows 上断言的是注册表，在 Linux 上断言的
+是 shell 配置文件，两条路径毫无关系。CI 的 ubuntu job 是唯一的守卫——它第一次
+跑就抓出「一次 apply 只留下最后一个变量」这种 Windows 上不可能出现的 bug。
+
+写这类测试时：断言"持久化成功"要走 `env.Read`（各平台自己的实现），不要断言
+进程内 `os.Getenv`；涉及顺序的两步操作要真的写两遍，单步测试看不出覆盖问题。
+
 
 ---
 
