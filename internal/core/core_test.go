@@ -12,13 +12,17 @@ import (
 )
 
 // sandbox points paths at a temp dir so a test never touches the real home.
+//
+// Reset is registered before the Setenv calls because t.Cleanup runs LIFO:
+// registered last it would re-read the environment while it still pointed at
+// the temp dir, leaving the package cached on a home that no longer exists.
 func sandbox(t *testing.T) string {
 	t.Helper()
 	h := t.TempDir()
+	t.Cleanup(paths.Reset)
 	t.Setenv("HOME", h)
 	t.Setenv("USERPROFILE", h)
 	paths.OverrideHome(h, filepath.Join(h, ".config"))
-	t.Cleanup(paths.Reset)
 	return h
 }
 

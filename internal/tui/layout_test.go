@@ -28,6 +28,9 @@ import (
 func viewLayoutTestRegistry(t *testing.T) *registry.Registry {
 	t.Helper()
 	home := t.TempDir()
+	// Registered before the Setenv calls: t.Cleanup runs LIFO, and Reset must
+	// read the restored environment or the package stays cached on this home.
+	t.Cleanup(paths.Reset)
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
 	t.Setenv("APPDATA", filepath.Join(home, "AppData", "Roaming"))
@@ -39,7 +42,6 @@ func viewLayoutTestRegistry(t *testing.T) *registry.Registry {
 	// One source configured via the environment, so both badge states exist.
 	t.Setenv("GOPROXY", "https://goproxy.cn,direct")
 	paths.Reset()
-	t.Cleanup(paths.Reset)
 	engine.SetSeed(plugins.FS)
 	loader := engine.NewLoader()
 	if _, err := loader.SeedIfEmpty(); err != nil {

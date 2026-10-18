@@ -71,14 +71,17 @@ func fullSet(version string) map[string]string {
 
 // sandbox points AppDir at a temp dir so tests never read the developer's real
 // sync state or write into their real plugin directory.
+//
+// Reset is registered before the Setenv calls because t.Cleanup runs LIFO;
+// otherwise the package caches the temp home and every later test inherits it.
 func sandbox(t *testing.T) string {
 	t.Helper()
 	appData := t.TempDir()
+	t.Cleanup(paths.Reset)
 	t.Setenv("APPDATA", appData)
 	t.Setenv("HOME", appData)
 	t.Setenv("USERPROFILE", appData)
 	paths.Reset()
-	t.Cleanup(paths.Reset)
 	dir := paths.OfficialPluginDir()
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)

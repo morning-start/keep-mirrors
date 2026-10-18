@@ -12,14 +12,19 @@ import (
 
 // seedSandbox points the plugin root at a temp dir so a test never seeds into
 // the developer's real AppData.
+//
+// The cache reset is registered BEFORE the Setenv calls on purpose: t.Cleanup
+// runs LIFO, and the package caches the resolved home. Registered last, Reset
+// ran while the environment still pointed at the temp dir, so every later test
+// in this package inherited a home that no longer existed.
 func seedSandbox(t *testing.T) string {
 	t.Helper()
 	appData := t.TempDir()
+	t.Cleanup(paths.Reset)
 	t.Setenv("APPDATA", appData)
 	t.Setenv("HOME", appData)
 	t.Setenv("USERPROFILE", appData)
 	paths.Reset()
-	t.Cleanup(paths.Reset)
 	return appData
 }
 

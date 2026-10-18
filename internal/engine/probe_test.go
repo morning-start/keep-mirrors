@@ -13,6 +13,9 @@ import (
 // used to locate the managed block must match it.
 func TestProbeReadAndFind(t *testing.T) {
 	home := t.TempDir()
+	// Registered before the Setenv calls (t.Cleanup is LIFO): without it the
+	// package keeps the temp home cached for every later test in this package.
+	t.Cleanup(paths.Reset)
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
 	paths.Reset()
