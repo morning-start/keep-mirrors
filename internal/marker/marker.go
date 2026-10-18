@@ -11,8 +11,9 @@
 // Everything outside the block is left byte-for-byte identical, so user
 // comments, hand-written settings and tool-specific formatting survive an
 // apply. Rewriting a block is idempotent: the same options always produce the
-// same file. Removing a block (Restore) strips the sentinels and the content
-// between them, and collapses the blank lines they left behind.
+// same file. Removing a block (Remove) strips the sentinels and the content
+// between them, plus the separator line Replace added above the block, and
+// leaves every other byte untouched.
 //
 // This is deliberately not a config parser. Parsing and re-serialising a
 // .toml or .npmrc file loses information we cannot reconstruct (comment
@@ -123,26 +124,29 @@ func Replace(content string, b Block) string {
 }
 
 // Remove strips the managed block from content and returns the new content.
-// Trailing blank lines left at the removal site are collapsed to a single
-// newline so repeated apply/remove cycles do not grow the file.
+//
+// The blank separator line Replace put above the block goes with it, so
+// Replace followed by Remove reproduces the original bytes. Blank lines
+// anywhere else are left exactly as they are: a run of blank lines far from
+// the block is the user's formatting, and "tidying" it would rewrite parts of
+// the file the block never touched. An earlier version collapsed every
+// "\n\n\n" run in the whole file, which is why the tests pin the bytes on both
+// sides of the block.
 func Remove(content, name string, f Format) string {
 	start, end, ok := Find(content, name, f)
 	if !ok {
 		return content
 	}
 	lines := strings.Split(content, "\n")
-	out := append([]string{}, lines[:start]...)
+	out := make([]string, 0, len(lines)-(end-start))
+	out = append(out, lines[:start]...)
+	// Drop one blank line directly above the head sentinel: that is the
+	// separator Replace added, not the user's spacing.
+	if len(out) > 0 && strings.TrimSpace(out[len(out)-1]) == "" {
+		out = out[:len(out)-1]
+	}
 	out = append(out, lines[end:]...)
-	s := strings.Join(out, "\n")
-	// Collapse runs of blank lines that now sit at the join point.
-	for strings.Contains(s, "\n\n\n") {
-		s = strings.ReplaceAll(s, "\n\n\n", "\n\n")
-	}
-	s = strings.TrimRight(s, "\n")
-	if s != "" {
-		s += "\n"
-	}
-	return s
+	return strings.Join(out, "\n")
 }
 
 // Present reports whether content already carries a managed block with this

@@ -31,10 +31,11 @@ func Apply(p *Plan) (*Backup, error) {
 
 	for _, c := range p.Changes {
 		switch c.Kind {
-		case ChangeConfig:
+		case ChangeConfig, ChangeConfigRemove:
 			// c.After was computed by Describe from the current on-disk
 			// state, so writing it is exactly writing the diff the user
-			// approved.
+			// approved. For a removal, After is the content with the block
+			// stripped.
 			if err := fsutil.WriteFile(c.File, c.After, 0); err != nil {
 				return bak, fmt.Errorf("write %s: %w", c.File, err)
 			}

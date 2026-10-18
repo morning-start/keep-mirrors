@@ -27,6 +27,13 @@ type ChangeKind string
 const (
 	// ChangeConfig rewrites a managed block in a configuration file.
 	ChangeConfig ChangeKind = "config"
+	// ChangeConfigRemove strips the managed block from the file entirely.
+	// It is how "restore the official source" is expressed for config files:
+	// deleting the block returns the tool to its built-in default, whereas
+	// writing an empty value produces an invalid config (a blank `registry=`
+	// makes npm fail with ERR_INVALID_URL, and `replace-with = ''` makes
+	// cargo unable to resolve crates.io).
+	ChangeConfigRemove ChangeKind = "config-remove"
 	// ChangeEnv sets a user environment variable.
 	ChangeEnv ChangeKind = "env"
 	// ChangeEnvUnset removes a user environment variable.
@@ -114,6 +121,18 @@ func (b *Builder) SetFile(file string, f marker.Format, cf config.Format, block 
 		CF:      cf,
 		Block:   block,
 		Entries: entries,
+	})
+	return b
+}
+
+// RemoveFile appends a managed-block removal. The block name and comment
+// format identify what to strip; entries and value syntax are not involved.
+func (b *Builder) RemoveFile(file string, f marker.Format, block string) *Builder {
+	b.plan.Changes = append(b.plan.Changes, Change{
+		Kind:   ChangeConfigRemove,
+		File:   paths.Expand(file),
+		Format: f,
+		Block:  block,
 	})
 	return b
 }

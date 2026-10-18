@@ -313,6 +313,14 @@ func planFromTable(t *lua.LTable, providerID string) (*core.Plan, error) {
 					configFormatOf(strOf(ct, "syntax")),
 					strOf(ct, "block"), entries...)
 
+			case "config-remove":
+				// Strip the managed block entirely: the restore-official
+				// path. Writing an empty value would leave the tool with an
+				// invalid config instead of its built-in default.
+				b.RemoveFile(strOf(ct, "file"),
+					markerFormatOf(strOf(ct, "format")),
+					strOf(ct, "block"))
+
 			case "env":
 				b.SetEnv(strOf(ct, "name"), strOf(ct, "value"))
 

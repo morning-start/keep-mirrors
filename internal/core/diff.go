@@ -49,6 +49,15 @@ func (c *Change) describe() error {
 		c.After = marker.Replace(cur, marker.Block{Name: c.Block, Format: c.Format, Body: body})
 		c.Summary = describeConfig(c, body)
 
+	case ChangeConfigRemove:
+		cur, err := fsutil.Read(c.File)
+		if err != nil {
+			return fmt.Errorf("read %s: %w", c.File, err)
+		}
+		c.Before = cur
+		c.After = marker.Remove(cur, c.Block, c.Format)
+		c.Summary = fmt.Sprintf("%s: remove block %q", displayPath(c.File), c.Block)
+
 	case ChangeEnv:
 		cur, err := readEnv(c.Name)
 		if err != nil {
@@ -141,6 +150,18 @@ func Diff(c Change) string {
 		}
 		if len(bs) == 0 && len(as) == 0 {
 			b.WriteString("    (no change)\n")
+		}
+
+	case ChangeConfigRemove:
+		// The After side has no block by definition, so show the block that
+		// is going away rather than the context that stays.
+		bs := blockSlice(before, c)
+		fmt.Fprintf(&b, "%s\n", displayPath(c.File))
+		for _, l := range bs {
+			b.WriteString("  - " + l + "\n")
+		}
+		if len(bs) == 0 {
+			b.WriteString("    (no block to remove)\n")
 		}
 
 	case ChangeEnv, ChangeEnvUnset:
