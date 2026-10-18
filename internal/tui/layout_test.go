@@ -185,9 +185,13 @@ func TestHighlightMatchesSelectedProvider(t *testing.T) {
 	}
 
 	for _, line := range strings.Split(View(am, false, ""), "\n") {
-		if strings.Contains(line, "48;5;236") { // styleItemSel's background
-			if got := ansi.Strip(line); !strings.Contains(got, "Go") {
+		if strings.Contains(line, "48;5;24") { // styleItemSel's background
+			got := ansi.Strip(line)
+			if !strings.Contains(got, "Go") {
 				t.Errorf("the highlighted row is not Go:\n%s", got)
+			}
+			if !strings.Contains(got, "> Go") {
+				t.Errorf("the highlighted row lacks the > cursor marker:\n%s", got)
 			}
 			return
 		}

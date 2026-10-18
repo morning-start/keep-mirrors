@@ -37,17 +37,19 @@ var (
 	colorOK     = lipgloss.Color("42")
 	colorWarn   = lipgloss.Color("214")
 	colorErr    = lipgloss.Color("203")
-	colorSelBg  = lipgloss.Color("236")
+	// colorSelBg is a deliberate step away from the background: the old 236
+	// (dark grey) was near-invisible on dark themes, and "which row is
+	// selected" is the single most important thing a list must communicate.
+	colorSelBg = lipgloss.Color("24")
 
 	styleGroup = lipgloss.NewStyle().
 			Foreground(colorAccent).
 			Bold(true)
 
-	styleItem = lipgloss.NewStyle().
-			PaddingLeft(2)
+	styleItem = lipgloss.NewStyle()
 
 	styleItemSel = lipgloss.NewStyle().
-			PaddingLeft(2).
+			Bold(true).
 			Background(colorSelBg).
 			Foreground(lipgloss.Color("231"))
 
@@ -167,16 +169,26 @@ func renderList(m *app.Model, width, height int) string {
 			}
 			st := statuses[p.ID()]
 			badge := statusBadge(st)
+
+			// The row cursor is ASCII ">" on purpose: the blue bar carries
+			// the selection on colour terminals, and the marker keeps it
+			// readable on mono ones and in screenshots. A "▸" would render
+			// one or two cells wide depending on the terminal's CJK mode and
+			// knock every selected row out of alignment.
+			marker := "  "
+			if item == m.Cursor {
+				marker = "> "
+			}
 			budget := width - 2 - lipgloss.Width(badge) - 1
 			if budget < 4 {
 				budget = 4
 			}
-			line := padEnd(ansi.Truncate(p.Title(), budget, "…"), budget) + " " + badge
+			line := marker + padEnd(ansi.Truncate(p.Title(), budget, "…"), budget) + " " + badge
 
 			if item == m.Cursor {
 				// The selection is a full-width bar, not a highlight that
 				// stops where the text happens to end.
-				b.WriteString(styleItemSel.Render(padEnd(line, width-2)))
+				b.WriteString(styleItemSel.Render(padEnd(line, width)))
 			} else {
 				b.WriteString(styleItem.Render(line))
 			}
@@ -245,7 +257,7 @@ func renderDetail(m *app.Model, width, height int) string {
 		s := styleItem
 		if pr.Label == active {
 			marker = "(●)"
-			s = s.Foreground(colorAccent)
+			s = s.Foreground(colorAccent).Bold(true)
 		}
 		b.WriteString(s.Render("  " + marker + " " + truncate(pr.Label, width-10)))
 		b.WriteString("\n")
@@ -367,15 +379,17 @@ func renderBar(m *app.Model, width int) string {
 			left = styleOK.Render(s)
 		}
 	} else if p := m.Selected(); p != nil {
+		// Name the selected source explicitly: the bar is the one place that
+		// answers "which row am I on" in words rather than colours.
 		if m.Plan != nil && !m.Plan.Empty() {
-			left = fmt.Sprintf("%s · %d 处待改", m.PresetLabel(p), m.Plan.ChangeCount())
+			left = fmt.Sprintf("%s · %s · %d 处待改", p.ID(), m.PresetLabel(p), m.Plan.ChangeCount())
 			if m.LastBackup != nil {
 				// The full backup id is noise until there is something to
 				// roll back to; "—" taught nobody anything.
 				left += " · 可撤销"
 			}
 		} else {
-			left = fmt.Sprintf("%s · 无需更改", m.PresetLabel(p))
+			left = fmt.Sprintf("%s · %s · 无需更改", p.ID(), m.PresetLabel(p))
 		}
 	}
 
