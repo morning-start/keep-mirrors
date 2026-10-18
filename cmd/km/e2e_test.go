@@ -470,7 +470,14 @@ func TestFlutterEnvRoundTrip(t *testing.T) {
 			t.Fatalf("env.Read(%s): %v", name, err)
 		}
 		if v == "" {
-			t.Errorf("%s not persisted after apply", name)
+			// Print where the write should have landed: on POSIX the durable
+			// store is the shell profile, and a wrong shell guess shows up
+			// only as "nothing was persisted".
+			sh := env.DetectShell()
+			profile := env.ProfilePath(sh)
+			body, _ := os.ReadFile(profile)
+			t.Errorf("%s not persisted after apply (shell=%q profile=%q body=%q)",
+				name, sh, profile, body)
 		}
 	}
 	// status must see it via the persisted store, not just the process env.
