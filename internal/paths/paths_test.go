@@ -98,6 +98,34 @@ func TestWithinHomeResolvedRejectsSymlinkEscape(t *testing.T) {
 	}
 }
 
+// TestWithinHomeResolvedAllowsMissingHome covers the case where home itself is
+// gone — a deleted temp dir, a profile path created on first login, a Windows
+// 8.3 short name. The check used to resolve only the candidate through its
+// nearest existing ancestor and leave home in its unresolved form, so the two
+// disagreed and a path plainly under home was reported as outside it. That is
+// exactly what turned every km.fs.read into "outside the home directory" on CI.
+//
+// The symlink is what makes the two forms differ textually; without it the
+// resolved and unresolved spellings are the same string and the bug is
+// invisible.
+func TestWithinHomeResolvedAllowsMissingHome(t *testing.T) {
+	real := t.TempDir()
+	link := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(real, link); err != nil {
+		t.Skipf("cannot create symlinks here: %v", err)
+	}
+
+	h := filepath.Join(link, "gone", "home")
+	withHome(t, h)
+
+	if !WithinHomeResolved(filepath.Join(h, "pip", "pip.conf")) {
+		t.Error("a path under a home that does not exist yet was rejected")
+	}
+	if WithinHomeResolved(filepath.Join(real, "sibling")) {
+		t.Error("a sibling of the unresolved home was accepted")
+	}
+}
+
 // TestWithinHomeResolvedAllowsMissingPath checks that a file which does not
 // exist yet is still judged by where it would land, rather than rejected
 // outright because EvalSymlinks could not resolve it.

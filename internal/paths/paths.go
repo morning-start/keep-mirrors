@@ -127,8 +127,15 @@ func WithinHomeResolved(p string) bool {
 	if !within(home, abs) {
 		return false
 	}
+	// Resolve home the same way as the candidate. EvalSymlinks alone fails
+	// when home does not exist — a freshly implemented profile, a temp dir
+	// some other test already deleted — and then root stays in its unresolved
+	// form while the candidate is resolved through its nearest existing
+	// ancestor. The two then disagree even though the candidate is plainly
+	// inside, which is how a Windows 8.3 home (RUNNER~1) turned every
+	// km.fs.read into "outside the home directory".
 	root := home
-	if r, err := filepath.EvalSymlinks(home); err == nil {
+	if r, ok := resolveExisting(home); ok {
 		root = r
 	}
 	resolved, ok := resolveExisting(abs)
