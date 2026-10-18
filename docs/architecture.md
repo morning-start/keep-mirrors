@@ -85,7 +85,7 @@ section-aware 的结构化改写（且必定先备份）。
 │  internal/core     Plan / Diff / Apply / Backup / Undo          │
 ├──────────────────────────────────────────────────────────────┤
 │  internal/marker   托管块编辑器（保注释、幂等）                  │
-│  internal/config   INI/TOML/KV/YAML 的最小渲染与读回             │
+│  internal/config   INI/TOML/KV/YAML 的最小渲染（读回在插件里）   │
 │  internal/env      环境变量：Windows HKCU / POSIX profile        │
 │  internal/fsutil   原子写（tmp → fsync → rename）、模式保持       │
 │  internal/paths    ~ 解析、应用数据目录、插件目录、home 边界检查   │
@@ -108,7 +108,7 @@ section-aware 的结构化改写（且必定先备份）。
 | `paths` | 解析 `~`、应用数据目录、home 边界检查 | `Expand` 必须让 `C:\x` 保持绝对路径，不能拼成 `home/C:\x` |
 | `fsutil` | 原子写、读、模式保持、目录创建 | 临时文件与目标同目录，保证 rename 是同一文件系统内的原子操作 |
 | `marker` | 托管块的查找 / 替换 / 摘除 | 块外内容字节级不变；半写的块（有头无尾）按不存在处理 |
-| `config` | 四种语法的渲染与读回 | 已带引号的值不重复引号；读回时跳过无法解析的行而不是报错 |
+| `config` | 四种语法的渲染 | 已带引号的值不重复引号；读回不在 Go 侧——插件 `status()` 用 Lua 模式读自己的块 |
 | `env` | 环境变量读写与广播 | Windows 写 `HKCU\Environment` + `WM_SETTINGCHANGE`；POSIX 写 profile 托管块 |
 | `core` | Plan、Diff、Apply、Backup、Undo | Apply 前必 `Describe`；备份先于任何修改 |
 | `provider` | Provider 接口、`Preset` / `Setting` / `Status` 数据类型 | 接口字段与 Lua 契约 1:1；预设顺序即默认值顺序，不排序 |

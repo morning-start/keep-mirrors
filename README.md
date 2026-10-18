@@ -64,7 +64,7 @@ keep-mirrors/
 │   ├── paths/         # ~ 解析、应用数据目录、插件目录、home 边界检查
 │   ├── fsutil/        # 原子写（tmp → fsync → rename）、模式保持
 │   ├── marker/        # 托管块编辑器：# >>> keep-mirrors:pip >>> ... <<< <<<
-│   ├── config/        # INI / TOML / KV / YAML 的最小渲染与读回
+│   ├── config/        # INI / TOML / KV / YAML 的最小渲染（读回在插件）
 │   ├── env/           # 环境变量：Windows HKCU + 广播；POSIX profile 块
 │   ├── core/          # Plan / Diff / Apply / Backup / Undo
 │   ├── provider/      # Provider 接口与 Meta（与 Lua 契约 1:1 对应）
