@@ -14,6 +14,7 @@
 //	km apply <id>       apply a preset (--preset to choose, --yes to skip the prompt)
 //	km bench <id>       measure every preset endpoint
 //	km undo             restore the most recent backup
+//	km version          print the build revision this binary came from
 //	km plugin dir       print the plugin directories
 //	km plugin list      list the loaded plugins
 //	km plugin show <id> print a plugin's metadata
@@ -24,6 +25,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"runtime/debug"
 	"sort"
 	"strings"
 	"time"
@@ -74,6 +76,8 @@ func run(args []string) error {
 		return cmdPlugin(args[1:])
 	case "backups":
 		return cmdBackups(args[1:])
+	case "version":
+		return cmdVersion()
 	case "help", "-h", "--help":
 		usage()
 		return nil
@@ -566,6 +570,53 @@ func reportBroken(diag []engine.PluginSource) {
 	}
 }
 
+// cmdVersion reports which build is running. Every debugging session of the
+// shape "the fix is committed but the screen still looks wrong" has ended in a
+// stale binary; the revision makes that answerable in one command.
+//
+// The revision comes from the build info the toolchain stamps automatically
+// when compiling from a git checkout — nothing to pass by hand. A flag that
+// must be remembered is silently absent exactly once and lies from then on,
+// which is the same reasoning as the plugin PROVENANCE file.
+func cmdVersion() error {
+	bi, ok := debug.ReadBuildInfo()
+	if !ok {
+		fmt.Println("km dev build (no build info)")
+		return nil
+	}
+	rev, built := "", ""
+	dirty := false
+	for _, s := range bi.Settings {
+		switch s.Key {
+		case "vcs.revision":
+			rev = s.Value
+		case "vcs.time":
+			built = s.Value
+		case "vcs.modified":
+			dirty = s.Value == "true"
+		}
+	}
+	if rev == "" {
+		fmt.Println("km dev build (not built from a git checkout)")
+		return nil
+	}
+	if len(rev) > 7 {
+		rev = rev[:7]
+	}
+	state := "clean"
+	if dirty {
+		// A dirty build carries a revision it does not fully match; without
+		// this note it claims an identity the source tree disproves.
+		state = "built with uncommitted changes"
+	}
+	if built != "" {
+		fmt.Printf("km %s (committed %s, %s)\n", rev, built, state)
+	} else {
+		fmt.Printf("km %s (%s)\n", rev, state)
+	}
+	return nil
+}
+
 // parseProvider extracts the provider id and flags from a command line.
 //
 // Both flag forms are accepted: "--preset=tuna" and "--preset tuna". The
@@ -708,6 +759,7 @@ usage:
   km bench <id>         measure every preset endpoint
   km undo               restore the most recent backup
   km backups            list backups
+  km version            print the build revision this binary came from
   km plugin dir         print the plugin directories
   km plugin list        list loaded plugins
   km plugin show <id>   print a plugin's metadata
